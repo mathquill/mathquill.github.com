@@ -7,73 +7,32 @@
 
 <title>MathQuill - WYSIWYG math using only HTML and CSS</title>
 
+<link rel="stylesheet" type="text/css" href="home.css">
 <link rel="stylesheet" type="text/css" href="mathquill.css">
 
 <style type="text/css">
-html {
-  background-color: #DDF;
-  height: 100%;
-}
-body {
-  min-height: 100%;
-  max-width: 6.5in;
-  margin: 0 auto;
-  padding: 0 1em;
-  font-family: Georgia, serif;
-  color: black;
-  background-color: white;
-}
-h1 {
-  font-size: 2em;
-  margin: 0;
-  padding-top: .5em;
-}
-h1 small {
-  font-size: 60%;
-}
 p small {
   font: 90% Verdana, sans-serif;
-}
-code {
-  font: 90% monospace;
-  background: #DDD;
-  border-radius: .3em;
-  -moz-border-radius: .3em;
-  -webkit-border-radius: .3em;
-  padding: 0 .3em;
-}
-a {
-  color: mediumblue;
-  text-decoration: none;
-}
-a:hover {
-  color: black;
-  text-shadow: #40F 0 0 .2em;
-}
-a:active {
-  color: #400;
-  text-shadow: red 0 0 .2em;
-}
-ul {
-  padding-left: 1em;
 }
 </style>
 
 </head>
 <body>
+<div id="body">
 
-<a href="http://github.com/you"><img style="position: absolute; top: 0; right: 0; border: 0;" src="https://gs1.wac.edgecastcdn.net/80460E/assets/img/4c7dc970b89fd04b81c8e221ba88ff99a06c6b61/687474703a2f2f73332e616d617a6f6e6177732e636f6d2f6769746875622f726962626f6e732f666f726b6d655f72696768745f77686974655f6666666666662e706e67" alt="Fork me on GitHub!"></a>
+<a href="http://github.com/laughinghan/mathquill"><img style="position: absolute; top: 0; right: 0; border: 0;" src="https://gs1.wac.edgecastcdn.net/80460E/assets/img/4c7dc970b89fd04b81c8e221ba88ff99a06c6b61/687474703a2f2f73332e616d617a6f6e6177732e636f6d2f6769746875622f726962626f6e732f666f726b6d655f72696768745f77686974655f6666666666662e706e67" alt="Fork me on GitHub!"></a>
 
-<h1><a href="http://github.com/laughinghan/mathquill">MathQuill</a>
-  <small>by <a href="http://github.com/laughinghan">laughinghan</a> and <a href="http://github.com/jayferd">jayferd</a></small></h1>
+<h1>MathQuill <small>by <a href="http://github.com/laughinghan">Han</a> and <a href="http://github.com/jayferd">Jay</a></small></h1>
 
 <p><i>WYSIWYG math using only HTML and CSS</i>
 
 <p>Try typing <code>x^2</code>: <span class="mathquill-editable"></span>
 <br>Backspace and try <code>3/4</code>, try <code>\sin\theta</code>, try <code>\sqrt x</code>.
-<br>Move around with the arrow keys, click, drag, cut, copy, paste.
+<br>Move around with the arrow keys, click, drag, cut, copy, paste like any other textbox.
 
-<p>MathQuill renders LaTeX math as semantically rich HTML (see our <a href="demo.html">thorough demo</a>) and presents it as human-readable math by styling with CSS. Showcasing the power of the HTML DOM, this math is WYSIWYG editable.
+<p>MathQuill renders LaTeX math as semantically rich HTML and presents it as human-readable math by styling with CSS. Showcasing the power of the HTML DOM, this math is WYSIWYG editable.
+
+<p>For our LaTeX and HTML API, see our <a href="demo.html">thorough demo</a>.
 
 <p>See also: our <a href="http://lolgebra.com">sister project <small>Lolgebra</small></a>, online chatrooms where you can &ldquo;<small>lol</small>&rdquo; in math!</p>
 
@@ -84,11 +43,7 @@ ul {
 <h3>Project Contact</h3>
 <p>Han (<a href="mailto:laughinghan@gmail.com">laughinghan@gmail.com</a>)</p>
 
-<h3>Authors</h3>
-
-<p>Han (<a href="http://github.com/laughinghan">github.com/laughinghan</a>)
-<br>Jay (<a href="http://github.com/jayferd">github.com/jayferd</a>)
-
+</div>
 <script type="text/javascript" src="http://ajax.googleapis.com/ajax/libs/jquery/1.6.2/jquery.min.js"></script>
 <script type="text/javascript" src="mathquill.min.js"></script>
 <script type="text/javascript">
