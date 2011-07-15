@@ -55,8 +55,8 @@ code span {
 
 <p>LaTeX math can also have textboxes inside: <span class="mathquill-embedded-latex">\int\editable{}dx</span> or even <span class="mathquill-embedded-latex">\sqrt{\editable{x^2+y^2}}</span></p>
 
-<p>This button runs the JavaScript code written on it to MathQuill-ify the following <code>&lt;code&gt;</code> element into an editable math textbox: <button onclick="$(this).text('$(this).next().mathquill(\'revert\')').next().mathquill('editable').focus(); var orig = arguments.callee; this.onclick = function(){  $(this).text('$(this).next().mathquill(\'editable\').focus()').next().mathquill('revert'); this.onclick = orig;$};">$(this).next().mathquill('editable').focus()</button>
-       <code>\frac{d}{dx}\sqrt{x} = \frac{d}{dx}x^{\frac{1}{2}} = \frac{1}{2}x^{-\frac{1}{2}} = \frac{1}{2\sqrt{x}}</code></p>
+<p>This button runs the JavaScript code written on it to MathQuill-ify the following <code>&lt;pre&gt;</code> element into an editable math textbox: <button onclick="$(this).text('$(this).next().mathquill(\'revert\')').next().mathquill('editable').focus(); var orig = arguments.callee; this.onclick = function(){  $(this).text('$(this).next().mathquill(\'editable\').focus()').next().mathquill('revert'); this.onclick = orig;$};">$(this).next().mathquill('editable').focus()</button>
+<pre>\frac{d}{dx}\sqrt{x} = \frac{d}{dx}x^{\frac{1}{2}} = \frac{1}{2}x^{-\frac{1}{2}} = \frac{1}{2\sqrt{x}}</pre></p>
 
 </div>
 <script type="text/javascript" src="http://ajax.googleapis.com/ajax/libs/jquery/1.6.2/jquery.min.js"></script>
