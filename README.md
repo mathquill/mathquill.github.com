@@ -1,1 +1,1 @@
-Official website for http://github.com/laughinghan/mathquill
+Official website for http://github.com/mathquill/mathquill
