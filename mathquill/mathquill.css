@@ -307,6 +307,8 @@
 .mathquill-editable .selection.blur,
 .mathquill-rendered-math .selection.blur .non-leaf,
 .mathquill-editable .selection.blur .non-leaf,
+.mathquill-rendered-math .selection.blur .scaled,
+.mathquill-editable .selection.blur .scaled,
 .mathquill-rendered-math .selection.blur .matrixed,
 .mathquill-editable .selection.blur .matrixed {
   background: #D4D4D4 !important;
