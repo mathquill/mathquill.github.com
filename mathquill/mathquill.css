@@ -15,6 +15,7 @@
 .mathquill-editable {
   display: -moz-inline-box;
   display: inline-block;
+  white-space: pre-wrap;
 }
 .mathquill-editable .cursor {
   border-left: 1px solid black;
@@ -100,7 +101,6 @@
   -webkit-user-select: none;
   -moz-user-select: none;
   user-select: none;
-  white-space: pre-wrap;
 }
 .mathquill-rendered-math .empty {
   background: #ccc;
@@ -278,6 +278,16 @@
   padding-left: .15em;
   padding-right: .2em;
   margin-right: .1em;
+}
+.mathquill-rendered-math .vector-prefix {
+  display: block;
+  text-align: center;
+  line-height: .25em;
+  margin-bottom: -0.1em;
+  font-size: 0.75em;
+}
+.mathquill-rendered-math .vector-stem {
+  display: block;
 }
 .mathquill-rendered-math,
 .mathquill-rendered-math .mathquill-editable {
