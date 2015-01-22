@@ -1,8 +1,11 @@
 /**
- * Copyleft 2010-2011 Jay and Han (laughinghan@gmail.com)
- *   under the GNU Lesser General Public License
- *     http://www.gnu.org/licenses/lgpl.html
- * Project Website: http://mathquill.com
+ * MathQuill: http://mathquill.com
+ * by Jay and Han (laughinghan@gmail.com)
+ *
+ * This Source Code Form is subject to the terms of the
+ * Mozilla Public License, v. 2.0. If a copy of the MPL
+ * was not distributed with this file, You can obtain
+ * one at http://mozilla.org/MPL/2.0/.
  */
 
 (function() {
@@ -48,10 +51,11 @@ var P = (function(prototype, ownProperty, undefined) {
   function isObject(o) { return typeof o === 'object'; }
   function isFunction(f) { return typeof f === 'function'; }
 
-  // a function that gets reused to make uninitialized objects
-  function BareConstructor() {}
+  // used to extend the prototypes of superclasses (which might not
+  // have `.Bare`s)
+  function SuperclassBare() {}
 
-  function P(_superclass /* = Object */, definition) {
+  return function P(_superclass /* = Object */, definition) {
     // handle the case where no superclass is given
     if (definition === undefined) {
       definition = _superclass;
@@ -81,8 +85,8 @@ var P = (function(prototype, ownProperty, undefined) {
     C.Bare = Bare;
 
     // Set up the prototype of the new class.
-    var _super = BareConstructor[prototype] = _superclass[prototype];
-    var proto = Bare[prototype] = C[prototype] = new BareConstructor;
+    var _super = SuperclassBare[prototype] = _superclass[prototype];
+    var proto = Bare[prototype] = C[prototype] = C.p = new SuperclassBare;
 
     // other variables, as a minifier optimization
     var extensions;
@@ -127,9 +131,6 @@ var P = (function(prototype, ownProperty, undefined) {
       return C;
     })(definition);
   }
-
-  // ship it
-  return P;
 
   // as a minifier optimization, we've closured in a few helper functions
   // and the string 'prototype' (C[p] is much shorter than C.prototype)
@@ -1312,7 +1313,7 @@ function createRoot(jQ, root, textbox, editable) {
       $(e.target.ownerDocument).unbind('mousemove', docmousemove).unbind('mouseup', mouseup);
     }
 
-    setTimeout(function() { textarea.focus(); });
+    setTimeout(function() { textarea.focus(); textarea.focused = true; });
       // preventDefault won't prevent focus on mousedown in IE<9
       // that means immediately after this mousedown, whatever was
       // mousedown-ed will receive focus
@@ -1323,7 +1324,7 @@ function createRoot(jQ, root, textbox, editable) {
 
     anticursor = Point(cursor.parent, cursor[L], cursor[R]);
 
-    if (!editable) jQ.prepend(textareaSpan);
+    if (!editable && !textarea.focused) jQ.prepend(textareaSpan);
 
     jQ.mousemove(mousemove);
     $(e.target.ownerDocument).mousemove(docmousemove).mouseup(mouseup);
@@ -1341,6 +1342,7 @@ function createRoot(jQ, root, textbox, editable) {
     });
     function detach() {
       textareaSpan.detach();
+      textarea.focused = false;
     }
     return;
   }
@@ -1923,7 +1925,7 @@ CharCmds['/'] = P(Fraction, function(_, _super) {
           leftward instanceof BinaryOperator ||
           leftward instanceof TextBlock ||
           leftward instanceof BigSymbol ||
-          ',;:'.split('').indexOf(leftward.ctrlSeq) > -1
+          /^[,;:]$/.test(leftward.ctrlSeq)
         ) //lookbehind for operator
       )
         leftward = leftward[L];
@@ -3260,7 +3262,7 @@ JS environment could actually contain many instances. */
 var Cursor = P(Point, function(_) {
   _.init = function(root) {
     this.parent = this.root = root;
-    var jQ = this.jQ = this._jQ = $('<span class="cursor">&zwj;</span>');
+    var jQ = this.jQ = this._jQ = $('<span class="cursor">&#8203;</span>');
 
     //closured for setInterval
     this.blink = function(){ jQ.toggleClass('blink'); };
@@ -3389,13 +3391,14 @@ var Cursor = P(Point, function(_) {
    *   Given undefined, will bubble up to the next ancestor block.
    *   Given false, will stop bubbling.
    *   Given a MathBlock,
-   *     + moveUp will insAtRightEnd of it
-   *     + moveDown will insAtLeftEnd of it
-   *
+   *     + if there is a cached Point in the block, insert there
+   *     + else, seekHoriz within the block to the current x-coordinate (to be
+   *       as close to directly above/below the current position as possible)
    */
   _.moveUp = function() { return moveUpDown(this, 'up'); };
   _.moveDown = function() { return moveUpDown(this, 'down'); };
   function moveUpDown(self, dir) {
+    self.clearSelection().show();
     if (self[R][dir]) self.insAtLeftEnd(self[R][dir]);
     else if (self[L][dir]) self.insAtRightEnd(self[L][dir]);
     else {
@@ -3428,8 +3431,7 @@ var Cursor = P(Point, function(_) {
         ancestorBlock = ancestorBlock.parent.parent;
       } while (ancestorBlock);
     }
-
-    return self.clearSelection().show();
+    return self;
   }
 
   _.seek = function(target, pageX, pageY) {
