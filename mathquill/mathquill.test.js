@@ -1,6 +1,6 @@
 /**
  * MathQuill: http://mathquill.com
- * by Jeanine and Han (laughinghan@gmail.com)
+ * by Jeanine (jneen@jneen.net) and Han (laughinghan@gmail.com)
  *
  * This Source Code Form is subject to the terms of the
  * Mozilla Public License, v. 2.0. If a copy of the MPL
@@ -12,15 +12,84 @@
 
 var jQuery = window.jQuery,
   undefined,
-  _, //temp variable of prototypes
   mqCmdId = 'mathquill-command-id',
   mqBlockId = 'mathquill-block-id',
   min = Math.min,
   max = Math.max;
 
-var __slice = [].slice;
-
 function noop() {}
+
+/**
+ * A utility higher-order function that makes defining variadic
+ * functions more convenient by letting you essentially define functions
+ * with the last argument as a splat, i.e. the last argument "gathers up"
+ * remaining arguments to the function:
+ *   var doStuff = variadic(function(first, rest) { return rest; });
+ *   doStuff(1, 2, 3); // => [2, 3]
+ */
+var __slice = [].slice;
+function variadic(fn) {
+  var numFixedArgs = fn.length - 1;
+  return function() {
+    var args = __slice.call(arguments, 0, numFixedArgs);
+    var varArg = __slice.call(arguments, numFixedArgs);
+    return fn.apply(this, args.concat([ varArg ]));
+  };
+}
+
+/**
+ * A utility higher-order function that makes combining object-oriented
+ * programming and functional programming techniques more convenient:
+ * given a method name and any number of arguments to be bound, returns
+ * a function that calls it's first argument's method of that name (if
+ * it exists) with the bound arguments and any additional arguments that
+ * are passed:
+ *   var sendMethod = send('method', 1, 2);
+ *   var obj = { method: function() { return Array.apply(this, arguments); } };
+ *   sendMethod(obj, 3, 4); // => [1, 2, 3, 4]
+ *   // or more specifically,
+ *   var obj2 = { method: function(one, two, three) { return one*two + three; } };
+ *   sendMethod(obj2, 3); // => 5
+ *   sendMethod(obj2, 4); // => 6
+ */
+var send = variadic(function(method, args) {
+  return variadic(function(obj, moreArgs) {
+    if (method in obj) return obj[method].apply(obj, args.concat(moreArgs));
+  });
+});
+
+/**
+ * A utility higher-order function that creates "implicit iterators"
+ * from "generators": given a function that takes in a sole argument,
+ * a "yield_" function, that calls "yield_" repeatedly with an object as
+ * a sole argument (presumably objects being iterated over), returns
+ * a function that calls it's first argument on each of those objects
+ * (if the first argument is a function, it is called repeatedly with
+ * each object as the first argument, otherwise it is stringified and
+ * the method of that name is called on each object (if such a method
+ * exists)), passing along all additional arguments:
+ *   var a = [
+ *     { method: function(list) { list.push(1); } },
+ *     { method: function(list) { list.push(2); } },
+ *     { method: function(list) { list.push(3); } }
+ *   ];
+ *   a.each = iterator(function(yield_) {
+ *     for (var i in this) yield_(this[i]);
+ *   });
+ *   var list = [];
+ *   a.each('method', list);
+ *   list; // => [1, 2, 3]
+ *   // Note that the for-in loop will yield 'each', but 'each' maps to
+ *   // the function object created by iterator() which does not have a
+ *   // .method() method, so that just fails silently.
+ */
+function iterator(generator) {
+  return variadic(function(fn, args) {
+    if (typeof fn !== 'function') fn = send(fn);
+    var yield_ = function(obj) { return fn.apply(obj, [ obj ].concat(args)); };
+    return generator.call(this, yield_);
+  });
+}
 
 /**
  * sugar to make defining lots of commands easier.
@@ -136,241 +205,923 @@ var P = (function(prototype, ownProperty, undefined) {
   // and the string 'prototype' (C[p] is much shorter than C.prototype)
 })('prototype', ({}).hasOwnProperty);
 /*************************************************
- * Textarea Manager
+ * Base classes of edit tree-related objects
  *
- * An abstraction layer wrapping the textarea in
- * an object with methods to manipulate and listen
- * to events on, that hides all the nasty cross-
- * browser incompatibilities behind a uniform API.
- *
- * Design goal: This is a *HARD* internal
- * abstraction barrier. Cross-browser
- * inconsistencies are not allowed to leak through
- * and be dealt with by event handlers. All future
- * cross-browser issues that arise must be dealt
- * with here, and if necessary, the API updated.
- *
- * Organization:
- * - key values map and stringify()
- * - manageTextarea()
- *    + defer() and flush()
- *    + event handler logic
- *    + attach event handlers and export methods
+ * Only doing tree node manipulation via these
+ * adopt/ disown methods guarantees well-formedness
+ * of the tree.
  ************************************************/
 
-var manageTextarea = (function() {
-  // The following [key values][1] map was compiled from the
-  // [DOM3 Events appendix section on key codes][2] and
-  // [a widely cited report on cross-browser tests of key codes][3],
-  // except for 10: 'Enter', which I've empirically observed in Safari on iOS
-  // and doesn't appear to conflict with any other known key codes.
-  //
-  // [1]: http://www.w3.org/TR/2012/WD-DOM-Level-3-Events-20120614/#keys-keyvalues
-  // [2]: http://www.w3.org/TR/2012/WD-DOM-Level-3-Events-20120614/#fixed-virtual-key-codes
-  // [3]: http://unixpapa.com/js/key.html
-  var KEY_VALUES = {
-    8: 'Backspace',
-    9: 'Tab',
+// L = 'left'
+// R = 'right'
+//
+// the contract is that they can be used as object properties
+// and (-L) === R, and (-R) === L.
+var L = -1;
+var R = 1;
 
-    10: 'Enter', // for Safari on iOS
+function prayDirection(dir) {
+  pray('a direction was passed', dir === L || dir === R);
+}
 
-    13: 'Enter',
+/**
+ * Tiny extension of jQuery adding directionalized DOM manipulation methods.
+ *
+ * Funny how Pjs v3 almost just works with `jQuery.fn.init`.
+ *
+ * jQuery features that don't work on $:
+ *   - jQuery.*, like jQuery.ajax, obviously (Pjs doesn't and shouldn't
+ *                                            copy constructor properties)
+ *
+ *   - jQuery(function), the shortcut for `jQuery(document).ready(function)`,
+ *     because `jQuery.fn.init` is idiosyncratic and Pjs doing, essentially,
+ *     `jQuery.fn.init.apply(this, arguments)` isn't quite right, you need:
+ *
+ *       _.init = function(s, c) { jQuery.fn.init.call(this, s, c, $(document)); };
+ *
+ *     if you actually give a shit (really, don't bother),
+ *     see https://github.com/jquery/jquery/blob/1.7.2/src/core.js#L889
+ *
+ *   - jQuery(selector), because jQuery translates that to
+ *     `jQuery(document).find(selector)`, but Pjs doesn't (should it?) let
+ *     you override the result of a constructor call
+ *       + note that because of the jQuery(document) shortcut-ness, there's also
+ *         the 3rd-argument-needs-to-be-`$(document)` thing above, but the fix
+ *         for that (as can be seen above) is really easy. This problem requires
+ *         a way more intrusive fix
+ *
+ * And that's it! Everything else just magically works because jQuery internally
+ * uses `this.constructor()` everywhere (hence calling `$`), but never ever does
+ * `this.constructor.find` or anything like that, always doing `jQuery.find`.
+ */
+var $ = P(jQuery, function(_) {
+  _.insDirOf = function(dir, el) {
+    return dir === L ?
+      this.insertBefore(el.first()) : this.insertAfter(el.last());
+  };
+  _.insAtDirEnd = function(dir, el) {
+    return dir === L ? this.prependTo(el) : this.appendTo(el);
+  };
+});
 
-    16: 'Shift',
-    17: 'Control',
-    18: 'Alt',
-    20: 'CapsLock',
+var Point = P(function(_) {
+  _.parent = 0;
+  _[L] = 0;
+  _[R] = 0;
 
-    27: 'Esc',
-
-    32: 'Spacebar',
-
-    33: 'PageUp',
-    34: 'PageDown',
-    35: 'End',
-    36: 'Home',
-
-    37: 'Left',
-    38: 'Up',
-    39: 'Right',
-    40: 'Down',
-
-    45: 'Insert',
-
-    46: 'Del',
-
-    144: 'NumLock'
+  _.init = function(parent, leftward, rightward) {
+    this.parent = parent;
+    this[L] = leftward;
+    this[R] = rightward;
   };
 
-  // To the extent possible, create a normalized string representation
-  // of the key combo (i.e., key code and modifier keys).
-  function stringify(evt) {
-    var which = evt.which || evt.keyCode;
-    var keyVal = KEY_VALUES[which];
-    var key;
-    var modifiers = [];
+  this.copy = function(pt) {
+    return Point(pt.parent, pt[L], pt[R]);
+  };
+});
 
-    if (evt.ctrlKey) modifiers.push('Ctrl');
-    if (evt.originalEvent && evt.originalEvent.metaKey) modifiers.push('Meta');
-    if (evt.altKey) modifiers.push('Alt');
-    if (evt.shiftKey) modifiers.push('Shift');
+/**
+ * MathQuill virtual-DOM tree-node abstract base class
+ */
+var Node = P(function(_) {
+  _[L] = 0;
+  _[R] = 0
+  _.parent = 0;
 
-    key = keyVal || String.fromCharCode(which);
+  var id = 0;
+  function uniqueNodeId() { return id += 1; }
+  this.byId = {};
 
-    if (!modifiers.length && !keyVal) return key;
+  _.init = function() {
+    this.id = uniqueNodeId();
+    Node.byId[this.id] = this;
 
-    modifiers.push(key);
-    return modifiers.join('-');
-  }
+    this.ends = {};
+    this.ends[L] = 0;
+    this.ends[R] = 0;
+  };
 
-  // create a textarea manager that calls callbacks at useful times
-  // and exports useful public methods
-  return function manageTextarea(el, opts) {
-    var keydown = null;
-    var keypress = null;
+  _.dispose = function() { delete Node.byId[this.id]; };
 
-    if (!opts) opts = {};
-    var textCallback = opts.text || noop;
-    var keyCallback = opts.key || noop;
-    var pasteCallback = opts.paste || noop;
-    var onCut = opts.cut || noop;
+  _.toString = function() { return '{{ MathQuill Node #'+this.id+' }}'; };
 
-    var textarea = jQuery(el);
-    var target = jQuery(opts.container || textarea);
+  _.jQ = $();
+  _.jQadd = function(jQ) { return this.jQ = this.jQ.add(jQ); };
+  _.jQize = function(jQ) {
+    // jQuery-ifies this.html() and links up the .jQ of all corresponding Nodes
+    var jQ = $(jQ || this.html());
 
-    // checkTextareaFor() is called after keypress or paste events to
-    // say "Hey, I think something was just typed" or "pasted" (resp.),
-    // so that at all subsequent opportune times (next event or timeout),
-    // will check for expected typed or pasted text.
-    // Need to check repeatedly because #135: in Safari 5.1 (at least),
-    // after selecting something and then typing, the textarea is
-    // incorrectly reported as selected during the input event (but not
-    // subsequently).
-    var checkTextarea = noop, timeoutId;
-    function checkTextareaFor(checker) {
-      checkTextarea = checker;
-      clearTimeout(timeoutId);
-      timeoutId = setTimeout(checker);
-    }
-    target.bind('keydown keypress input keyup focusout paste', function() { checkTextarea(); });
-
-
-    // -*- public methods -*- //
-    function select(text) {
-      // check textarea at least once/one last time before munging (so
-      // no race condition if selection happens after keypress/paste but
-      // before checkTextarea), then never again ('cos it's been munged)
-      checkTextarea();
-      checkTextarea = noop;
-      clearTimeout(timeoutId);
-
-      textarea.val(text);
-      if (text) textarea[0].select();
+    function jQadd(el) {
+      if (el.getAttribute) {
+        var cmdId = el.getAttribute('mathquill-command-id');
+        var blockId = el.getAttribute('mathquill-block-id');
+        if (cmdId) Node.byId[cmdId].jQadd(el);
+        if (blockId) Node.byId[blockId].jQadd(el);
+      }
+      for (el = el.firstChild; el; el = el.nextSibling) {
+        jQadd(el);
+      }
     }
 
-    // -*- helper subroutines -*- //
+    for (var i = 0; i < jQ.length; i += 1) jQadd(jQ[i]);
+    return jQ;
+  };
 
-    // Determine whether there's a selection in the textarea.
-    // This will always return false in IE < 9, which don't support
-    // HTMLTextareaElement::selection{Start,End}.
-    function hasSelection() {
-      var dom = textarea[0];
+  _.createDir = function(dir, cursor) {
+    prayDirection(dir);
+    var node = this;
+    node.jQize();
+    node.jQ.insDirOf(dir, cursor.jQ);
+    cursor[dir] = node.adopt(cursor.parent, cursor[L], cursor[R]);
+    return node;
+  };
+  _.createLeftOf = function(el) { return this.createDir(L, el); };
 
-      if (!('selectionStart' in dom)) return false;
-      return dom.selectionStart !== dom.selectionEnd;
+  _.selectChildren = function(leftEnd, rightEnd) {
+    return Selection(leftEnd, rightEnd);
+  };
+
+  _.bubble = iterator(function(yield_) {
+    for (var ancestor = this; ancestor; ancestor = ancestor.parent) {
+      var result = yield_(ancestor);
+      if (result === false) break;
     }
 
-    function popText(callback) {
-      var text = textarea.val();
-      textarea.val('');
-      if (text) callback(text);
-    }
+    return this;
+  });
 
-    function handleKey() {
-      keyCallback(stringify(keydown), keydown);
-    }
+  _.postOrder = iterator(function(yield_) {
+    (function recurse(descendant) {
+      descendant.eachChild(recurse);
+      yield_(descendant);
+    })(this);
 
-    // -*- event handlers -*- //
-    function onKeydown(e) {
-      keydown = e;
-      keypress = null;
+    return this;
+  });
 
-      handleKey();
-    }
+  _.isEmpty = function() {
+    return this.ends[L] === 0 && this.ends[R] === 0;
+  };
 
-    function onKeypress(e) {
-      // call the key handler for repeated keypresses.
-      // This excludes keypresses that happen directly
-      // after keydown.  In that case, there will be
-      // no previous keypress, so we skip it here
-      if (keydown && keypress) handleKey();
+  _.children = function() {
+    return Fragment(this.ends[L], this.ends[R]);
+  };
 
-      keypress = e;
+  _.eachChild = function() {
+    var children = this.children();
+    children.each.apply(children, arguments);
+    return this;
+  };
 
-      checkTextareaFor(typedText);
-    }
-    function typedText() {
-      // If there is a selection, the contents of the textarea couldn't
-      // possibly have just been typed in.
-      // This happens in browsers like Firefox and Opera that fire
-      // keypress for keystrokes that are not text entry and leave the
-      // selection in the textarea alone, such as Ctrl-C.
-      // Note: we assume that browsers that don't support hasSelection()
-      // also never fire keypress on keystrokes that are not text entry.
-      // This seems reasonably safe because:
-      // - all modern browsers including IE 9+ support hasSelection(),
-      //   making it extremely unlikely any browser besides IE < 9 won't
-      // - as far as we know IE < 9 never fires keypress on keystrokes
-      //   that aren't text entry, which is only as reliable as our
-      //   tests are comprehensive, but the IE < 9 way to do
-      //   hasSelection() is poorly documented and is also only as
-      //   reliable as our tests are comprehensive
-      // If anything like #40 or #71 is reported in IE < 9, see
-      // b1318e5349160b665003e36d4eedd64101ceacd8
-      if (hasSelection()) return;
+  _.foldChildren = function(fold, fn) {
+    return this.children().fold(fold, fn);
+  };
 
-      popText(textCallback);
-    }
+  _.withDirAdopt = function(dir, parent, withDir, oppDir) {
+    Fragment(this, this).withDirAdopt(dir, parent, withDir, oppDir);
+    return this;
+  };
 
-    function onBlur() { keydown = keypress = null; }
+  _.adopt = function(parent, leftward, rightward) {
+    Fragment(this, this).adopt(parent, leftward, rightward);
+    return this;
+  };
 
-    function onPaste(e) {
-      // browsers are dumb.
-      //
-      // In Linux, middle-click pasting causes onPaste to be called,
-      // when the textarea is not necessarily focused.  We focus it
-      // here to ensure that the pasted text actually ends up in the
-      // textarea.
-      //
-      // It's pretty nifty that by changing focus in this handler,
-      // we can change the target of the default action.  (This works
-      // on keydown too, FWIW).
-      //
-      // And by nifty, we mean dumb (but useful sometimes).
-      textarea.focus();
+  _.disown = function() {
+    Fragment(this, this).disown();
+    return this;
+  };
 
-      checkTextareaFor(pastedText);
-    }
-    function pastedText() {
-      popText(pasteCallback);
-    }
+  _.remove = function() {
+    this.jQ.remove();
+    this.postOrder('dispose');
+    return this.disown();
+  };
+});
 
-    // -*- attach event handlers -*- //
-    target.bind({
-      keydown: onKeydown,
-      keypress: onKeypress,
-      focusout: onBlur,
-      cut: onCut,
-      paste: onPaste
+function prayWellFormed(parent, leftward, rightward) {
+  pray('a parent is always present', parent);
+  pray('leftward is properly set up', (function() {
+    // either it's empty and `rightward` is the left end child (possibly empty)
+    if (!leftward) return parent.ends[L] === rightward;
+
+    // or it's there and its [R] and .parent are properly set up
+    return leftward[R] === rightward && leftward.parent === parent;
+  })());
+
+  pray('rightward is properly set up', (function() {
+    // either it's empty and `leftward` is the right end child (possibly empty)
+    if (!rightward) return parent.ends[R] === leftward;
+
+    // or it's there and its [L] and .parent are properly set up
+    return rightward[L] === leftward && rightward.parent === parent;
+  })());
+}
+
+
+/**
+ * An entity outside the virtual tree with one-way pointers (so it's only a
+ * "view" of part of the tree, not an actual node/entity in the tree) that
+ * delimits a doubly-linked list of sibling nodes.
+ * It's like a fanfic love-child between HTML DOM DocumentFragment and the Range
+ * classes: like DocumentFragment, its contents must be sibling nodes
+ * (unlike Range, whose contents are arbitrary contiguous pieces of subtrees),
+ * but like Range, it has only one-way pointers to its contents, its contents
+ * have no reference to it and in fact may still be in the visible tree (unlike
+ * DocumentFragment, whose contents must be detached from the visible tree
+ * and have their 'parent' pointers set to the DocumentFragment).
+ */
+var Fragment = P(function(_) {
+  _.init = function(withDir, oppDir, dir) {
+    if (dir === undefined) dir = L;
+    prayDirection(dir);
+
+    pray('no half-empty fragments', !withDir === !oppDir);
+
+    this.ends = {};
+
+    if (!withDir) return;
+
+    pray('withDir is passed to Fragment', withDir instanceof Node);
+    pray('oppDir is passed to Fragment', oppDir instanceof Node);
+    pray('withDir and oppDir have the same parent',
+         withDir.parent === oppDir.parent);
+
+    this.ends[dir] = withDir;
+    this.ends[-dir] = oppDir;
+
+    // To build the jquery collection for a fragment, accumulate elements
+    // into an array and then call jQ.add once on the result. jQ.add sorts the
+    // collection according to document order each time it is called, so
+    // building a collection by folding jQ.add directly takes more than
+    // quadratic time in the number of elements.
+    //
+    // https://github.com/jquery/jquery/blob/2.1.4/src/traversing.js#L112
+    var accum = this.fold([], function (accum, el) {
+      accum.push.apply(accum, el.jQ.get());
+      return accum;
     });
 
-    // -*- export public methods -*- //
-    return {
-      select: select
-    };
+    this.jQ = this.jQ.add(accum);
   };
-}());
-var Parser = P(function(_, _super, Parser) {
+  _.jQ = $();
+
+  // like Cursor::withDirInsertAt(dir, parent, withDir, oppDir)
+  _.withDirAdopt = function(dir, parent, withDir, oppDir) {
+    return (dir === L ? this.adopt(parent, withDir, oppDir)
+                      : this.adopt(parent, oppDir, withDir));
+  };
+  _.adopt = function(parent, leftward, rightward) {
+    prayWellFormed(parent, leftward, rightward);
+
+    var self = this;
+    self.disowned = false;
+
+    var leftEnd = self.ends[L];
+    if (!leftEnd) return this;
+
+    var rightEnd = self.ends[R];
+
+    if (leftward) {
+      // NB: this is handled in the ::each() block
+      // leftward[R] = leftEnd
+    } else {
+      parent.ends[L] = leftEnd;
+    }
+
+    if (rightward) {
+      rightward[L] = rightEnd;
+    } else {
+      parent.ends[R] = rightEnd;
+    }
+
+    self.ends[R][R] = rightward;
+
+    self.each(function(el) {
+      el[L] = leftward;
+      el.parent = parent;
+      if (leftward) leftward[R] = el;
+
+      leftward = el;
+    });
+
+    return self;
+  };
+
+  _.disown = function() {
+    var self = this;
+    var leftEnd = self.ends[L];
+
+    // guard for empty and already-disowned fragments
+    if (!leftEnd || self.disowned) return self;
+
+    self.disowned = true;
+
+    var rightEnd = self.ends[R]
+    var parent = leftEnd.parent;
+
+    prayWellFormed(parent, leftEnd[L], leftEnd);
+    prayWellFormed(parent, rightEnd, rightEnd[R]);
+
+    if (leftEnd[L]) {
+      leftEnd[L][R] = rightEnd[R];
+    } else {
+      parent.ends[L] = rightEnd[R];
+    }
+
+    if (rightEnd[R]) {
+      rightEnd[R][L] = leftEnd[L];
+    } else {
+      parent.ends[R] = leftEnd[L];
+    }
+
+    return self;
+  };
+
+  _.remove = function() {
+    this.jQ.remove();
+    this.each('postOrder', 'dispose');
+    return this.disown();
+  };
+
+  _.each = iterator(function(yield_) {
+    var self = this;
+    var el = self.ends[L];
+    if (!el) return self;
+
+    for (; el !== self.ends[R][R]; el = el[R]) {
+      var result = yield_(el);
+      if (result === false) break;
+    }
+
+    return self;
+  });
+
+  _.fold = function(fold, fn) {
+    this.each(function(el) {
+      fold = fn.call(this, fold, el);
+    });
+
+    return fold;
+  };
+});
+
+
+/**
+ * Registry of LaTeX commands and commands created when typing
+ * a single character.
+ *
+ * (Commands are all subclasses of Node.)
+ */
+var LatexCmds = {}, CharCmds = {};
+/********************************************
+ * Cursor and Selection "singleton" classes
+ *******************************************/
+
+/* The main thing that manipulates the Math DOM. Makes sure to manipulate the
+HTML DOM to match. */
+
+/* Sort of singletons, since there should only be one per editable math
+textbox, but any one HTML document can contain many such textboxes, so any one
+JS environment could actually contain many instances. */
+
+//A fake cursor in the fake textbox that the math is rendered in.
+var Cursor = P(Point, function(_) {
+  _.init = function(initParent, options) {
+    this.parent = initParent;
+    this.options = options;
+
+    var jQ = this.jQ = this._jQ = $('<span class="mq-cursor">&#8203;</span>');
+    //closured for setInterval
+    this.blink = function(){ jQ.toggleClass('mq-blink'); };
+
+    this.upDownCache = {};
+  };
+
+  _.show = function() {
+    this.jQ = this._jQ.removeClass('mq-blink');
+    if ('intervalId' in this) //already was shown, just restart interval
+      clearInterval(this.intervalId);
+    else { //was hidden and detached, insert this.jQ back into HTML DOM
+      if (this[R]) {
+        if (this.selection && this.selection.ends[L][L] === this[L])
+          this.jQ.insertBefore(this.selection.jQ);
+        else
+          this.jQ.insertBefore(this[R].jQ.first());
+      }
+      else
+        this.jQ.appendTo(this.parent.jQ);
+      this.parent.focus();
+    }
+    this.intervalId = setInterval(this.blink, 500);
+    return this;
+  };
+  _.hide = function() {
+    if ('intervalId' in this)
+      clearInterval(this.intervalId);
+    delete this.intervalId;
+    this.jQ.detach();
+    this.jQ = $();
+    return this;
+  };
+
+  _.withDirInsertAt = function(dir, parent, withDir, oppDir) {
+    if (parent !== this.parent && this.parent.blur) this.parent.blur();
+    this.parent = parent;
+    this[dir] = withDir;
+    this[-dir] = oppDir;
+  };
+  _.insDirOf = function(dir, el) {
+    prayDirection(dir);
+    this.withDirInsertAt(dir, el.parent, el[dir], el);
+    this.parent.jQ.addClass('mq-hasCursor');
+    this.jQ.insDirOf(dir, el.jQ);
+    return this;
+  };
+  _.insLeftOf = function(el) { return this.insDirOf(L, el); };
+  _.insRightOf = function(el) { return this.insDirOf(R, el); };
+
+  _.insAtDirEnd = function(dir, el) {
+    prayDirection(dir);
+    this.withDirInsertAt(dir, el, 0, el.ends[dir]);
+    this.jQ.insAtDirEnd(dir, el.jQ);
+    el.focus();
+    return this;
+  };
+  _.insAtLeftEnd = function(el) { return this.insAtDirEnd(L, el); };
+  _.insAtRightEnd = function(el) { return this.insAtDirEnd(R, el); };
+
+  /**
+   * jump up or down from one block Node to another:
+   * - cache the current Point in the node we're jumping from
+   * - check if there's a Point in it cached for the node we're jumping to
+   *   + if so put the cursor there,
+   *   + if not seek a position in the node that is horizontally closest to
+   *     the cursor's current position
+   */
+  _.jumpUpDown = function(from, to) {
+    var self = this;
+    self.upDownCache[from.id] = Point.copy(self);
+    var cached = self.upDownCache[to.id];
+    if (cached) {
+      cached[R] ? self.insLeftOf(cached[R]) : self.insAtRightEnd(cached.parent);
+    }
+    else {
+      var pageX = self.offset().left;
+      to.seek(pageX, self);
+    }
+  };
+  _.offset = function() {
+    //in Opera 11.62, .getBoundingClientRect() and hence jQuery::offset()
+    //returns all 0's on inline elements with negative margin-right (like
+    //the cursor) at the end of their parent, so temporarily remove the
+    //negative margin-right when calling jQuery::offset()
+    //Opera bug DSK-360043
+    //http://bugs.jquery.com/ticket/11523
+    //https://github.com/jquery/jquery/pull/717
+    var self = this, offset = self.jQ.removeClass('mq-cursor').offset();
+    self.jQ.addClass('mq-cursor');
+    return offset;
+  }
+  _.unwrapGramp = function() {
+    var gramp = this.parent.parent;
+    var greatgramp = gramp.parent;
+    var rightward = gramp[R];
+    var cursor = this;
+
+    var leftward = gramp[L];
+    gramp.disown().eachChild(function(uncle) {
+      if (uncle.isEmpty()) return;
+
+      uncle.children()
+        .adopt(greatgramp, leftward, rightward)
+        .each(function(cousin) {
+          cousin.jQ.insertBefore(gramp.jQ.first());
+        })
+      ;
+
+      leftward = uncle.ends[R];
+    });
+
+    if (!this[R]) { //then find something to be rightward to insLeftOf
+      if (this[L])
+        this[R] = this[L][R];
+      else {
+        while (!this[R]) {
+          this.parent = this.parent[R];
+          if (this.parent)
+            this[R] = this.parent.ends[L];
+          else {
+            this[R] = gramp[R];
+            this.parent = greatgramp;
+            break;
+          }
+        }
+      }
+    }
+    if (this[R])
+      this.insLeftOf(this[R]);
+    else
+      this.insAtRightEnd(greatgramp);
+
+    gramp.jQ.remove();
+
+    if (gramp[L].siblingDeleted) gramp[L].siblingDeleted(cursor.options, R);
+    if (gramp[R].siblingDeleted) gramp[R].siblingDeleted(cursor.options, L);
+  };
+  _.startSelection = function() {
+    var anticursor = this.anticursor = Point.copy(this);
+    var ancestors = anticursor.ancestors = {}; // a map from each ancestor of
+      // the anticursor, to its child that is also an ancestor; in other words,
+      // the anticursor's ancestor chain in reverse order
+    for (var ancestor = anticursor; ancestor.parent; ancestor = ancestor.parent) {
+      ancestors[ancestor.parent.id] = ancestor;
+    }
+  };
+  _.endSelection = function() {
+    delete this.anticursor;
+  };
+  _.select = function() {
+    var anticursor = this.anticursor;
+    if (this[L] === anticursor[L] && this.parent === anticursor.parent) return false;
+
+    // Find the lowest common ancestor (`lca`), and the ancestor of the cursor
+    // whose parent is the LCA (which'll be an end of the selection fragment).
+    for (var ancestor = this; ancestor.parent; ancestor = ancestor.parent) {
+      if (ancestor.parent.id in anticursor.ancestors) {
+        var lca = ancestor.parent;
+        break;
+      }
+    }
+    pray('cursor and anticursor in the same tree', lca);
+    // The cursor and the anticursor should be in the same tree, because the
+    // mousemove handler attached to the document, unlike the one attached to
+    // the root HTML DOM element, doesn't try to get the math tree node of the
+    // mousemove target, and Cursor::seek() based solely on coordinates stays
+    // within the tree of `this` cursor's root.
+
+    // The other end of the selection fragment, the ancestor of the anticursor
+    // whose parent is the LCA.
+    var antiAncestor = anticursor.ancestors[lca.id];
+
+    // Now we have two either Nodes or Points, guaranteed to have a common
+    // parent and guaranteed that if both are Points, they are not the same,
+    // and we have to figure out which is the left end and which the right end
+    // of the selection.
+    var leftEnd, rightEnd, dir = R;
+
+    // This is an extremely subtle algorithm.
+    // As a special case, `ancestor` could be a Point and `antiAncestor` a Node
+    // immediately to `ancestor`'s left.
+    // In all other cases,
+    // - both Nodes
+    // - `ancestor` a Point and `antiAncestor` a Node
+    // - `ancestor` a Node and `antiAncestor` a Point
+    // `antiAncestor[R] === rightward[R]` for some `rightward` that is
+    // `ancestor` or to its right, if and only if `antiAncestor` is to
+    // the right of `ancestor`.
+    if (ancestor[L] !== antiAncestor) {
+      for (var rightward = ancestor; rightward; rightward = rightward[R]) {
+        if (rightward[R] === antiAncestor[R]) {
+          dir = L;
+          leftEnd = ancestor;
+          rightEnd = antiAncestor;
+          break;
+        }
+      }
+    }
+    if (dir === R) {
+      leftEnd = antiAncestor;
+      rightEnd = ancestor;
+    }
+
+    // only want to select Nodes up to Points, can't select Points themselves
+    if (leftEnd instanceof Point) leftEnd = leftEnd[R];
+    if (rightEnd instanceof Point) rightEnd = rightEnd[L];
+
+    this.hide().selection = lca.selectChildren(leftEnd, rightEnd);
+    this.insDirOf(dir, this.selection.ends[dir]);
+    this.selectionChanged();
+    return true;
+  };
+
+  _.clearSelection = function() {
+    if (this.selection) {
+      this.selection.clear();
+      delete this.selection;
+      this.selectionChanged();
+    }
+    return this;
+  };
+  _.deleteSelection = function() {
+    if (!this.selection) return;
+
+    this[L] = this.selection.ends[L][L];
+    this[R] = this.selection.ends[R][R];
+    this.selection.remove();
+    this.selectionChanged();
+    delete this.selection;
+  };
+  _.replaceSelection = function() {
+    var seln = this.selection;
+    if (seln) {
+      this[L] = seln.ends[L][L];
+      this[R] = seln.ends[R][R];
+      delete this.selection;
+    }
+    return seln;
+  };
+});
+
+var Selection = P(Fragment, function(_, super_) {
+  _.init = function() {
+    super_.init.apply(this, arguments);
+    this.jQ = this.jQ.wrapAll('<span class="mq-selection"></span>').parent();
+      //can't do wrapAll(this.jQ = $(...)) because wrapAll will clone it
+  };
+  _.adopt = function() {
+    this.jQ.replaceWith(this.jQ = this.jQ.children());
+    return super_.adopt.apply(this, arguments);
+  };
+  _.clear = function() {
+    // using the browser's native .childNodes property so that we
+    // don't discard text nodes.
+    this.jQ.replaceWith(this.jQ[0].childNodes);
+    return this;
+  };
+  _.join = function(methodName) {
+    return this.fold('', function(fold, child) {
+      return fold + child[methodName]();
+    });
+  };
+});
+/*********************************************
+ * Controller for a MathQuill instance,
+ * on which services are registered with
+ *
+ *   Controller.open(function(_) { ... });
+ *
+ ********************************************/
+
+var Controller = P(function(_) {
+  _.init = function(root, container, options) {
+    this.id = root.id;
+    this.data = {};
+
+    this.root = root;
+    this.container = container;
+    this.options = options;
+
+    root.controller = this;
+
+    this.cursor = root.cursor = Cursor(root, options);
+    // TODO: stop depending on root.cursor, and rm it
+  };
+
+  _.handle = function(name, dir) {
+    var handlers = this.options.handlers;
+    if (handlers && handlers.fns[name]) {
+      var mq = handlers.APIClasses[this.KIND_OF_MQ](this);
+      if (dir === L || dir === R) handlers.fns[name](dir, mq);
+      else handlers.fns[name](mq);
+    }
+  };
+
+  var notifyees = [];
+  this.onNotify = function(f) { notifyees.push(f); };
+  _.notify = function() {
+    for (var i = 0; i < notifyees.length; i += 1) {
+      notifyees[i].apply(this.cursor, arguments);
+    }
+    return this;
+  };
+});
+/*********************************************************
+ * The publicly exposed MathQuill API.
+ ********************************************************/
+
+var API = {}, Options = P(), optionProcessors = {}, Progenote = P();
+
+/**
+ * Interface Versioning (#459, #495) to allow us to virtually guarantee
+ * backcompat. v0.10.x introduces it, so for now, don't completely break the
+ * API for people who don't know about it, just complain with console.warn().
+ *
+ * The methods are shimmed in outro.js so that MQ.MathField.prototype etc can
+ * be accessed.
+ */
+function insistOnInterVer() {
+  if (window.console) console.warn(
+    'This usage of the MathQuill API will fail in v1.0.0. The easiest fix is ' +
+    'to get interface version 1 before doing anything else:\n' +
+    '\n' +
+    '    MathQuill = MathQuill.getInterface(1);\n' +
+    '    // now MathQuill.MathField() works like it used to\n' +
+    ' '
+//   ^ apparently necessary to show the empty line in Blink/WebKit
+  );
+}
+// globally exported API object
+function MathQuill(el) {
+  insistOnInterVer();
+  return MQ1(el);
+};
+MathQuill.prototype = Progenote.p;
+MathQuill.interfaceVersion = function(v) {
+  // shim for #459-era interface versioning (ended with #495)
+  if (v !== 1) throw 'Only interface version 1 supported. You specified: ' + v;
+  return window.MathQuill = MQ1;
+};
+MathQuill.getInterface = getInterface;
+
+var MIN = getInterface.MIN = 1, MAX = getInterface.MAX = 2;
+function getInterface(v) {
+  if (!(MIN <= v && v <= MAX)) throw 'Only interface versions between ' +
+    MIN + ' and ' + MAX + ' supported. You specified: ' + v;
+
+  /**
+   * Function that takes an HTML element and, if it's the root HTML element of a
+   * static math or math or text field, returns an API object for it (else, null).
+   *
+   *   var mathfield = MQ.MathField(mathFieldSpan);
+   *   assert(MQ(mathFieldSpan).id === mathfield.id);
+   *   assert(MQ(mathFieldSpan).id === MQ(mathFieldSpan).id);
+   *
+   */
+  function MQ(el) {
+    if (!el || !el.nodeType) return null; // check that `el` is a HTML element, using the
+      // same technique as jQuery: https://github.com/jquery/jquery/blob/679536ee4b7a92ae64a5f58d90e9cc38c001e807/src/core/init.js#L92
+    var blockId = $(el).children('.mq-root-block').attr(mqBlockId);
+    var ctrlr = blockId && Node.byId[blockId].controller;
+    return ctrlr ? APIClasses[ctrlr.KIND_OF_MQ](ctrlr) : null;
+  };
+  var APIClasses = {};
+
+  MQ.L = L;
+  MQ.R = R;
+
+  function config(currentOptions, newOptions) {
+    if (newOptions && newOptions.handlers) {
+      newOptions.handlers = { fns: newOptions.handlers, APIClasses: APIClasses };
+    }
+    for (var name in newOptions) if (newOptions.hasOwnProperty(name)) {
+      var value = newOptions[name], processor = optionProcessors[name];
+      currentOptions[name] = (processor ? processor(value) : value);
+    }
+  }
+  MQ.config = function(opts) { config(Options.p, opts); return this; };
+
+  var AbstractMathQuill = APIClasses.AbstractMathQuill = P(Progenote, function(_) {
+    _.init = function(ctrlr) {
+      this.__controller = ctrlr;
+      this.__options = ctrlr.options;
+      this.id = ctrlr.id;
+      this.data = ctrlr.data;
+    };
+    _.__mathquillify = function(classNames) {
+      var ctrlr = this.__controller, root = ctrlr.root, el = ctrlr.container;
+      ctrlr.createTextarea();
+
+      var contents = el.addClass(classNames).contents().detach();
+      root.jQ =
+        $('<span class="mq-root-block"/>').attr(mqBlockId, root.id).appendTo(el);
+      this.latex(contents.text());
+
+      this.revert = function() {
+        return el.empty().unbind('.mathquill')
+        .removeClass('mq-editable-field mq-math-mode mq-text-mode')
+        .append(contents);
+      };
+    };
+    _.config = function(opts) { config(this.__options, opts); return this; };
+    _.el = function() { return this.__controller.container[0]; };
+    _.text = function() { return this.__controller.exportText(); };
+    _.latex = function(latex) {
+      if (arguments.length > 0) {
+        this.__controller.renderLatexMath(latex);
+        if (this.__controller.blurred) this.__controller.cursor.hide().parent.blur();
+        return this;
+      }
+      return this.__controller.exportLatex();
+    };
+    _.html = function() {
+      return this.__controller.root.jQ.html()
+        .replace(/ mathquill-(?:command|block)-id="?\d+"?/g, '')
+        .replace(/<span class="?mq-cursor( mq-blink)?"?>.?<\/span>/i, '')
+        .replace(/ mq-hasCursor|mq-hasCursor ?/, '')
+        .replace(/ class=(""|(?= |>))/g, '');
+    };
+    _.reflow = function() {
+      this.__controller.root.postOrder('reflow');
+      return this;
+    };
+  });
+  MQ.prototype = AbstractMathQuill.prototype;
+
+  APIClasses.EditableField = P(AbstractMathQuill, function(_, super_) {
+    _.__mathquillify = function() {
+      super_.__mathquillify.apply(this, arguments);
+      this.__controller.editable = true;
+      this.__controller.delegateMouseEvents();
+      this.__controller.editablesTextareaEvents();
+      return this;
+    };
+    _.focus = function() { this.__controller.textarea.focus(); return this; };
+    _.blur = function() { this.__controller.textarea.blur(); return this; };
+    _.write = function(latex) {
+      this.__controller.writeLatex(latex);
+      if (this.__controller.blurred) this.__controller.cursor.hide().parent.blur();
+      return this;
+    };
+    _.cmd = function(cmd) {
+      var ctrlr = this.__controller.notify(), cursor = ctrlr.cursor;
+      if (/^\\[a-z]+$/i.test(cmd)) {
+        cmd = cmd.slice(1);
+        var klass = LatexCmds[cmd];
+        if (klass) {
+          cmd = klass(cmd);
+          if (cursor.selection) cmd.replaces(cursor.replaceSelection());
+          cmd.createLeftOf(cursor.show());
+        }
+        else /* TODO: API needs better error reporting */;
+      }
+      else cursor.parent.write(cursor, cmd);
+      if (ctrlr.blurred) cursor.hide().parent.blur();
+      return this;
+    };
+    _.select = function() {
+      var ctrlr = this.__controller;
+      ctrlr.notify('move').cursor.insAtRightEnd(ctrlr.root);
+      while (ctrlr.cursor[L]) ctrlr.selectLeft();
+      return this;
+    };
+    _.clearSelection = function() {
+      this.__controller.cursor.clearSelection();
+      return this;
+    };
+
+    _.moveToDirEnd = function(dir) {
+      this.__controller.notify('move').cursor.insAtDirEnd(dir, this.__controller.root);
+      return this;
+    };
+    _.moveToLeftEnd = function() { return this.moveToDirEnd(L); };
+    _.moveToRightEnd = function() { return this.moveToDirEnd(R); };
+
+    _.keystroke = function(keys) {
+      var keys = keys.replace(/^\s+|\s+$/g, '').split(/\s+/);
+      for (var i = 0; i < keys.length; i += 1) {
+        this.__controller.keystroke(keys[i], { preventDefault: noop });
+      }
+      return this;
+    };
+    _.typedText = function(text) {
+      for (var i = 0; i < text.length; i += 1) this.__controller.typedText(text.charAt(i));
+      return this;
+    };
+  });
+  MQ.EditableField = function() { throw "wtf don't call me, I'm 'abstract'"; };
+  MQ.EditableField.prototype = APIClasses.EditableField.prototype;
+
+  /**
+   * Export the API functions that MathQuill-ify an HTML element into API objects
+   * of each class. If the element had already been MathQuill-ified but into a
+   * different kind (or it's not an HTML element), return null.
+   */
+  for (var kind in API) (function(kind, defAPIClass) {
+    var APIClass = APIClasses[kind] = defAPIClass(APIClasses);
+    MQ[kind] = function(el, opts) {
+      var mq = MQ(el);
+      if (mq instanceof APIClass || !el || !el.nodeType) return mq;
+      var ctrlr = Controller(APIClass.RootBlock(), $(el), Options());
+      ctrlr.KIND_OF_MQ = kind;
+      return APIClass(ctrlr).__mathquillify(opts, v);
+    };
+    MQ[kind].prototype = APIClass.prototype;
+  }(kind, API[kind]));
+
+  return MQ;
+}
+var MQ1 = getInterface(1);
+
+MathQuill.noConflict = function() {
+  window.MathQuill = origMathQuill;
+  return MathQuill;
+};
+var origMathQuill = window.MathQuill;
+window.MathQuill = MathQuill;
+
+function RootBlockMixin(_) {
+  var names = 'moveOutOf deleteOutOf selectOutOf upOutOf downOutOf'.split(' ');
+  for (var i = 0; i < names.length; i += 1) (function(name) {
+    _[name] = function(dir) { this.controller.handle(name, dir); };
+  }(names[i]));
+  _.reflow = function() {
+    this.controller.handle('reflow');
+    this.controller.handle('edited');
+    this.controller.handle('edit');
+  };
+}
+var Parser = P(function(_, super_, Parser) {
   // The Parser object is a wrapper for a parser function.
   // Externally, you use one to parse a string by calling
   //   var result = SomeParser.parse('Me Me Me! Parse Me!');
@@ -392,7 +1143,7 @@ var Parser = P(function(_, _super, Parser) {
   _.init = function(body) { this._ = body; };
 
   _.parse = function(stream) {
-    return this.skip(eof)._(stream, success, parseError);
+    return this.skip(eof)._(''+stream, success, parseError);
 
     function success(stream, result) { return result; }
   };
@@ -576,337 +1327,1030 @@ var Parser = P(function(_, _super, Parser) {
   });
 });
 /*************************************************
- * Base classes of the MathQuill virtual DOM tree
+ * Sane Keyboard Events Shim
  *
- * Only doing tree node manipulation via these
- * adopt/ disown methods guarantees well-formedness
- * of the tree.
+ * An abstraction layer wrapping the textarea in
+ * an object with methods to manipulate and listen
+ * to events on, that hides all the nasty cross-
+ * browser incompatibilities behind a uniform API.
+ *
+ * Design goal: This is a *HARD* internal
+ * abstraction barrier. Cross-browser
+ * inconsistencies are not allowed to leak through
+ * and be dealt with by event handlers. All future
+ * cross-browser issues that arise must be dealt
+ * with here, and if necessary, the API updated.
+ *
+ * Organization:
+ * - key values map and stringify()
+ * - saneKeyboardEvents()
+ *    + defer() and flush()
+ *    + event handler logic
+ *    + attach event handlers and export methods
  ************************************************/
 
-// L = 'left'
-// R = 'right'
-//
-// the contract is that they can be used as object properties
-// and (-L) === R, and (-R) === L.
-var L = -1;
-var R = 1;
+var saneKeyboardEvents = (function() {
+  // The following [key values][1] map was compiled from the
+  // [DOM3 Events appendix section on key codes][2] and
+  // [a widely cited report on cross-browser tests of key codes][3],
+  // except for 10: 'Enter', which I've empirically observed in Safari on iOS
+  // and doesn't appear to conflict with any other known key codes.
+  //
+  // [1]: http://www.w3.org/TR/2012/WD-DOM-Level-3-Events-20120614/#keys-keyvalues
+  // [2]: http://www.w3.org/TR/2012/WD-DOM-Level-3-Events-20120614/#fixed-virtual-key-codes
+  // [3]: http://unixpapa.com/js/key.html
+  var KEY_VALUES = {
+    8: 'Backspace',
+    9: 'Tab',
 
-function prayDirection(dir) {
-  pray('a direction was passed', dir === L || dir === R);
-}
+    10: 'Enter', // for Safari on iOS
 
-/**
- * Tiny extension of jQuery adding directionalized DOM manipulation methods.
- *
- * Funny how Pjs v3 almost just works with `jQuery.fn.init`.
- *
- * jQuery features that don't work on $:
- *   - jQuery.*, like jQuery.ajax, obviously (Pjs doesn't and shouldn't
- *                                            copy constructor properties)
- *
- *   - jQuery(function), the shortcut for `jQuery(document).ready(function)`,
- *     because `jQuery.fn.init` is idiosyncratic and Pjs doing, essentially,
- *     `jQuery.fn.init.apply(this, arguments)` isn't quite right, you need:
- *
- *       _.init = function(s, c) { jQuery.fn.init.call(this, s, c, $(document)); };
- *
- *     if you actually give a shit (really, don't bother),
- *     see https://github.com/jquery/jquery/blob/1.7.2/src/core.js#L889
- *
- *   - jQuery(selector), because jQuery translates that to
- *     `jQuery(document).find(selector)`, but Pjs doesn't (should it?) let
- *     you override the result of a constructor call
- *       + note that because of the jQuery(document) shortcut-ness, there's also
- *         the 3rd-argument-needs-to-be-`$(document)` thing above, but the fix
- *         for that (as can be seen above) is really easy. This problem requires
- *         a way more intrusive fix
- *
- * And that's it! Everything else just magically works because jQuery internally
- * uses `this.constructor()` everywhere (hence calling `$`), but never ever does
- * `this.constructor.find` or anything like that, always doing `jQuery.find`.
- */
-var $ = P(jQuery, function(_) {
-  _.insDirOf = function(dir, el) {
-    return dir === L ?
-      this.insertBefore(el.first()) : this.insertAfter(el.last());
-  };
-  _.insAtDirEnd = function(dir, el) {
-    return dir === L ? this.prependTo(el) : this.appendTo(el);
-  };
-});
+    13: 'Enter',
 
-var Point = P(function(_) {
-  _.parent = 0;
-  _[L] = 0;
-  _[R] = 0;
+    16: 'Shift',
+    17: 'Control',
+    18: 'Alt',
+    20: 'CapsLock',
 
-  _.init = function(parent, leftward, rightward) {
-    this.parent = parent;
-    this[L] = leftward;
-    this[R] = rightward;
-  };
-});
+    27: 'Esc',
 
-/**
- * MathQuill virtual-DOM tree-node abstract base class
- */
-var Node = P(function(_) {
-  _[L] = 0;
-  _[R] = 0
-  _.parent = 0;
+    32: 'Spacebar',
 
-  _.init = function() {
-    this.ends = {};
-    this.ends[L] = 0;
-    this.ends[R] = 0;
+    33: 'PageUp',
+    34: 'PageDown',
+    35: 'End',
+    36: 'Home',
+
+    37: 'Left',
+    38: 'Up',
+    39: 'Right',
+    40: 'Down',
+
+    45: 'Insert',
+
+    46: 'Del',
+
+    144: 'NumLock'
   };
 
-  _.children = function() {
-    return Fragment(this.ends[L], this.ends[R]);
-  };
+  // To the extent possible, create a normalized string representation
+  // of the key combo (i.e., key code and modifier keys).
+  function stringify(evt) {
+    var which = evt.which || evt.keyCode;
+    var keyVal = KEY_VALUES[which];
+    var key;
+    var modifiers = [];
 
-  _.eachChild = function(fn) {
-    return this.children().each(fn);
-  };
+    if (evt.ctrlKey) modifiers.push('Ctrl');
+    if (evt.originalEvent && evt.originalEvent.metaKey) modifiers.push('Meta');
+    if (evt.altKey) modifiers.push('Alt');
+    if (evt.shiftKey) modifiers.push('Shift');
 
-  _.foldChildren = function(fold, fn) {
-    return this.children().fold(fold, fn);
-  };
+    key = keyVal || String.fromCharCode(which);
 
-  _.adopt = function(parent, leftward, rightward) {
-    Fragment(this, this).adopt(parent, leftward, rightward);
-    return this;
-  };
+    if (!modifiers.length && !keyVal) return key;
 
-  _.disown = function() {
-    Fragment(this, this).disown();
-    return this;
-  };
-});
-
-/**
- * An entity outside the virtual tree with one-way pointers (so it's only a
- * "view" of part of the tree, not an actual node/entity in the tree) that
- * delimits a doubly-linked list of sibling nodes.
- * It's like a fanfic love-child between HTML DOM DocumentFragment and the Range
- * classes: like DocumentFragment, its contents must be sibling nodes
- * (unlike Range, whose contents are arbitrary contiguous pieces of subtrees),
- * but like Range, it has only one-way pointers to its contents, its contents
- * have no reference to it and in fact may still be in the visible tree (unlike
- * DocumentFragment, whose contents must be detached from the visible tree
- * and have their 'parent' pointers set to the DocumentFragment).
- */
-var Fragment = P(function(_) {
-  _.init = function(leftEnd, rightEnd) {
-    pray('no half-empty fragments', !leftEnd === !rightEnd);
-
-    this.ends = {};
-
-    if (!leftEnd) return;
-
-    pray('left end node is passed to Fragment', leftEnd instanceof Node);
-    pray('right end node is passed to Fragment', rightEnd instanceof Node);
-    pray('leftEnd and rightEnd have the same parent',
-         leftEnd.parent === rightEnd.parent);
-
-    this.ends[L] = leftEnd;
-    this.ends[R] = rightEnd;
-  };
-
-  function prayWellFormed(parent, leftward, rightward) {
-    pray('a parent is always present', parent);
-    pray('leftward is properly set up', (function() {
-      // either it's empty and `rightward` is the left end child (possibly empty)
-      if (!leftward) return parent.ends[L] === rightward;
-
-      // or it's there and its [R] and .parent are properly set up
-      return leftward[R] === rightward && leftward.parent === parent;
-    })());
-
-    pray('rightward is properly set up', (function() {
-      // either it's empty and `leftward` is the right end child (possibly empty)
-      if (!rightward) return parent.ends[R] === leftward;
-
-      // or it's there and its [L] and .parent are properly set up
-      return rightward[L] === leftward && rightward.parent === parent;
-    })());
+    modifiers.push(key);
+    return modifiers.join('-');
   }
 
-  _.adopt = function(parent, leftward, rightward) {
-    prayWellFormed(parent, leftward, rightward);
+  // create a keyboard events shim that calls callbacks at useful times
+  // and exports useful public methods
+  return function saneKeyboardEvents(el, handlers) {
+    var keydown = null;
+    var keypress = null;
 
-    var self = this;
-    self.disowned = false;
+    var textarea = jQuery(el);
+    var target = jQuery(handlers.container || textarea);
 
-    var leftEnd = self.ends[L];
-    if (!leftEnd) return this;
+    // checkTextareaFor() is called after keypress or paste events to
+    // say "Hey, I think something was just typed" or "pasted" (resp.),
+    // so that at all subsequent opportune times (next event or timeout),
+    // will check for expected typed or pasted text.
+    // Need to check repeatedly because #135: in Safari 5.1 (at least),
+    // after selecting something and then typing, the textarea is
+    // incorrectly reported as selected during the input event (but not
+    // subsequently).
+    var checkTextarea = noop, timeoutId;
+    function checkTextareaFor(checker) {
+      checkTextarea = checker;
+      clearTimeout(timeoutId);
+      timeoutId = setTimeout(checker);
+    }
+    target.bind('keydown keypress input keyup focusout paste', function() { checkTextarea(); });
 
-    var rightEnd = self.ends[R];
 
-    if (leftward) {
-      // NB: this is handled in the ::each() block
-      // leftward[R] = leftEnd
-    } else {
-      parent.ends[L] = leftEnd;
+    // -*- public methods -*- //
+    function select(text) {
+      // check textarea at least once/one last time before munging (so
+      // no race condition if selection happens after keypress/paste but
+      // before checkTextarea), then never again ('cos it's been munged)
+      checkTextarea();
+      checkTextarea = noop;
+      clearTimeout(timeoutId);
+
+      textarea.val(text);
+      if (text && textarea[0].select) textarea[0].select();
+      shouldBeSelected = !!text;
+    }
+    var shouldBeSelected = false;
+
+    // -*- helper subroutines -*- //
+
+    // Determine whether there's a selection in the textarea.
+    // This will always return false in IE < 9, which don't support
+    // HTMLTextareaElement::selection{Start,End}.
+    function hasSelection() {
+      var dom = textarea[0];
+
+      if (!('selectionStart' in dom)) return false;
+      return dom.selectionStart !== dom.selectionEnd;
     }
 
-    if (rightward) {
-      rightward[L] = rightEnd;
-    } else {
-      parent.ends[R] = rightEnd;
+    function handleKey() {
+      handlers.keystroke(stringify(keydown), keydown);
     }
 
-    self.ends[R][R] = rightward;
+    // -*- event handlers -*- //
+    function onKeydown(e) {
+      keydown = e;
+      keypress = null;
 
-    self.each(function(el) {
-      el[L] = leftward;
-      el.parent = parent;
-      if (leftward) leftward[R] = el;
+      if (shouldBeSelected) checkTextareaFor(function() {
+        if (textarea[0].select) textarea[0].select(); // re-select textarea in case it's an unrecognized
+        checkTextarea = noop; // key that clears the selection, then never
+        clearTimeout(timeoutId); // again, 'cos next thing might be blur
+      });
 
-      leftward = el;
+      handleKey();
+    }
+
+    function onKeypress(e) {
+      // call the key handler for repeated keypresses.
+      // This excludes keypresses that happen directly
+      // after keydown.  In that case, there will be
+      // no previous keypress, so we skip it here
+      if (keydown && keypress) handleKey();
+
+      keypress = e;
+
+      checkTextareaFor(typedText);
+    }
+    function typedText() {
+      // If there is a selection, the contents of the textarea couldn't
+      // possibly have just been typed in.
+      // This happens in browsers like Firefox and Opera that fire
+      // keypress for keystrokes that are not text entry and leave the
+      // selection in the textarea alone, such as Ctrl-C.
+      // Note: we assume that browsers that don't support hasSelection()
+      // also never fire keypress on keystrokes that are not text entry.
+      // This seems reasonably safe because:
+      // - all modern browsers including IE 9+ support hasSelection(),
+      //   making it extremely unlikely any browser besides IE < 9 won't
+      // - as far as we know IE < 9 never fires keypress on keystrokes
+      //   that aren't text entry, which is only as reliable as our
+      //   tests are comprehensive, but the IE < 9 way to do
+      //   hasSelection() is poorly documented and is also only as
+      //   reliable as our tests are comprehensive
+      // If anything like #40 or #71 is reported in IE < 9, see
+      // b1318e5349160b665003e36d4eedd64101ceacd8
+      if (hasSelection()) return;
+
+      var text = textarea.val();
+      if (text.length === 1) {
+        textarea.val('');
+        handlers.typedText(text);
+      } // in Firefox, keys that don't type text, just clear seln, fire keypress
+      // https://github.com/mathquill/mathquill/issues/293#issuecomment-40997668
+      else if (text && textarea[0].select) textarea[0].select(); // re-select if that's why we're here
+    }
+
+    function onBlur() { keydown = keypress = null; }
+
+    function onPaste(e) {
+      // browsers are dumb.
+      //
+      // In Linux, middle-click pasting causes onPaste to be called,
+      // when the textarea is not necessarily focused.  We focus it
+      // here to ensure that the pasted text actually ends up in the
+      // textarea.
+      //
+      // It's pretty nifty that by changing focus in this handler,
+      // we can change the target of the default action.  (This works
+      // on keydown too, FWIW).
+      //
+      // And by nifty, we mean dumb (but useful sometimes).
+      textarea.focus();
+
+      checkTextareaFor(pastedText);
+    }
+    function pastedText() {
+      var text = textarea.val();
+      textarea.val('');
+      if (text) handlers.paste(text);
+    }
+
+    // -*- attach event handlers -*- //
+    target.bind({
+      keydown: onKeydown,
+      keypress: onKeypress,
+      focusout: onBlur,
+      paste: onPaste
     });
 
-    return self;
+    // -*- export public methods -*- //
+    return {
+      select: select
+    };
+  };
+}());
+/***********************************************
+ * Export math in a human-readable text format
+ * As you can see, only half-baked so far.
+ **********************************************/
+
+Controller.open(function(_, super_) {
+  _.exportText = function() {
+    return this.root.foldChildren('', function(text, child) {
+      return text + child.text();
+    });
+  };
+});
+Controller.open(function(_) {
+  _.focusBlurEvents = function() {
+    var ctrlr = this, root = ctrlr.root, cursor = ctrlr.cursor;
+    var blurTimeout;
+    ctrlr.textarea.focus(function() {
+      ctrlr.blurred = false;
+      clearTimeout(blurTimeout);
+      ctrlr.container.addClass('mq-focused');
+      if (!cursor.parent)
+        cursor.insAtRightEnd(root);
+      if (cursor.selection) {
+        cursor.selection.jQ.removeClass('mq-blur');
+        ctrlr.selectionChanged(); //re-select textarea contents after tabbing away and back
+      }
+      else
+        cursor.show();
+    }).blur(function() {
+      ctrlr.blurred = true;
+      blurTimeout = setTimeout(function() { // wait for blur on window; if
+        root.postOrder('intentionalBlur'); // none, intentional blur: #264
+        cursor.clearSelection();
+        blur();
+      });
+      $(window).on('blur', windowBlur);
+    });
+    function windowBlur() { // blur event also fired on window, just switching
+      clearTimeout(blurTimeout); // tabs/windows, not intentional blur
+      if (cursor.selection) cursor.selection.jQ.addClass('mq-blur');
+      blur();
+    }
+    function blur() { // not directly in the textarea blur handler so as to be
+      cursor.hide().parent.blur(); // synchronous with/in the same frame as
+      ctrlr.container.removeClass('mq-focused'); // clearing/blurring selection
+      $(window).off('blur', windowBlur);
+    }
+    ctrlr.blurred = true;
+    cursor.hide().parent.blur();
+  };
+});
+
+/**
+ * TODO: I wanted to move MathBlock::focus and blur here, it would clean
+ * up lots of stuff like, TextBlock::focus is set to MathBlock::focus
+ * and TextBlock::blur calls MathBlock::blur, when instead they could
+ * use inheritance and super_.
+ *
+ * Problem is, there's lots of calls to .focus()/.blur() on nodes
+ * outside Controller::focusBlurEvents(), such as .postOrder('blur') on
+ * insertion, which if MathBlock::blur becomes Node::blur, would add the
+ * 'blur' CSS class to all Symbol's (because .isEmpty() is true for all
+ * of them).
+ *
+ * I'm not even sure there aren't other troublesome calls to .focus() or
+ * .blur(), so this is TODO for now.
+ */
+/*****************************************
+ * Deals with the browser DOM events from
+ * interaction with the typist.
+ ****************************************/
+
+Controller.open(function(_) {
+  _.keystroke = function(key, evt) {
+    this.cursor.parent.keystroke(key, evt, this);
+  };
+});
+
+Node.open(function(_) {
+  _.keystroke = function(key, e, ctrlr) {
+    var cursor = ctrlr.cursor;
+
+    switch (key) {
+    case 'Ctrl-Shift-Backspace':
+    case 'Ctrl-Backspace':
+      ctrlr.ctrlDeleteDir(L);
+      break;
+
+    case 'Shift-Backspace':
+    case 'Backspace':
+      ctrlr.backspace();
+      break;
+
+    // Tab or Esc -> go one block right if it exists, else escape right.
+    case 'Esc':
+    case 'Tab':
+      ctrlr.escapeDir(R, key, e);
+      return;
+
+    // Shift-Tab -> go one block left if it exists, else escape left.
+    case 'Shift-Tab':
+    case 'Shift-Esc':
+      ctrlr.escapeDir(L, key, e);
+      return;
+
+    // End -> move to the end of the current block.
+    case 'End':
+      ctrlr.notify('move').cursor.insAtRightEnd(cursor.parent);
+      break;
+
+    // Ctrl-End -> move all the way to the end of the root block.
+    case 'Ctrl-End':
+      ctrlr.notify('move').cursor.insAtRightEnd(ctrlr.root);
+      break;
+
+    // Shift-End -> select to the end of the current block.
+    case 'Shift-End':
+      while (cursor[R]) {
+        ctrlr.selectRight();
+      }
+      break;
+
+    // Ctrl-Shift-End -> select to the end of the root block.
+    case 'Ctrl-Shift-End':
+      while (cursor[R] || cursor.parent !== ctrlr.root) {
+        ctrlr.selectRight();
+      }
+      break;
+
+    // Home -> move to the start of the root block or the current block.
+    case 'Home':
+      ctrlr.notify('move').cursor.insAtLeftEnd(cursor.parent);
+      break;
+
+    // Ctrl-Home -> move to the start of the current block.
+    case 'Ctrl-Home':
+      ctrlr.notify('move').cursor.insAtLeftEnd(ctrlr.root);
+      break;
+
+    // Shift-Home -> select to the start of the current block.
+    case 'Shift-Home':
+      while (cursor[L]) {
+        ctrlr.selectLeft();
+      }
+      break;
+
+    // Ctrl-Shift-Home -> move to the start of the root block.
+    case 'Ctrl-Shift-Home':
+      while (cursor[L] || cursor.parent !== ctrlr.root) {
+        ctrlr.selectLeft();
+      }
+      break;
+
+    case 'Left': ctrlr.moveLeft(); break;
+    case 'Shift-Left': ctrlr.selectLeft(); break;
+    case 'Ctrl-Left': break;
+
+    case 'Right': ctrlr.moveRight(); break;
+    case 'Shift-Right': ctrlr.selectRight(); break;
+    case 'Ctrl-Right': break;
+
+    case 'Up': ctrlr.moveUp(); break;
+    case 'Down': ctrlr.moveDown(); break;
+
+    case 'Shift-Up':
+      if (cursor[L]) {
+        while (cursor[L]) ctrlr.selectLeft();
+      } else {
+        ctrlr.selectLeft();
+      }
+
+    case 'Shift-Down':
+      if (cursor[R]) {
+        while (cursor[R]) ctrlr.selectRight();
+      }
+      else {
+        ctrlr.selectRight();
+      }
+
+    case 'Ctrl-Up': break;
+    case 'Ctrl-Down': break;
+
+    case 'Ctrl-Shift-Del':
+    case 'Ctrl-Del':
+      ctrlr.ctrlDeleteDir(R);
+      break;
+
+    case 'Shift-Del':
+    case 'Del':
+      ctrlr.deleteForward();
+      break;
+
+    case 'Meta-A':
+    case 'Ctrl-A':
+      ctrlr.notify('move').cursor.insAtRightEnd(ctrlr.root);
+      while (cursor[L]) ctrlr.selectLeft();
+      break;
+
+    default:
+      return;
+    }
+    e.preventDefault();
+    ctrlr.scrollHoriz();
   };
 
-  _.disown = function() {
-    var self = this;
-    var leftEnd = self.ends[L];
+  _.moveOutOf = // called by Controller::escapeDir, moveDir
+  _.moveTowards = // called by Controller::moveDir
+  _.deleteOutOf = // called by Controller::deleteDir
+  _.deleteTowards = // called by Controller::deleteDir
+  _.unselectInto = // called by Controller::selectDir
+  _.selectOutOf = // called by Controller::selectDir
+  _.selectTowards = // called by Controller::selectDir
+    function() { pray('overridden or never called on this node'); };
+});
 
-    // guard for empty and already-disowned fragments
-    if (!leftEnd || self.disowned) return self;
+Controller.open(function(_) {
+  this.onNotify(function(e) {
+    if (e === 'move' || e === 'upDown') this.show().clearSelection();
+  });
+  _.escapeDir = function(dir, key, e) {
+    prayDirection(dir);
+    var cursor = this.cursor;
 
-    self.disowned = true;
+    // only prevent default of Tab if not in the root editable
+    if (cursor.parent !== this.root) e.preventDefault();
 
-    var rightEnd = self.ends[R]
-    var parent = leftEnd.parent;
+    // want to be a noop if in the root editable (in fact, Tab has an unrelated
+    // default browser action if so)
+    if (cursor.parent === this.root) return;
 
-    prayWellFormed(parent, leftEnd[L], leftEnd);
-    prayWellFormed(parent, rightEnd, rightEnd[R]);
-
-    if (leftEnd[L]) {
-      leftEnd[L][R] = rightEnd[R];
-    } else {
-      parent.ends[L] = rightEnd[R];
-    }
-
-    if (rightEnd[R]) {
-      rightEnd[R][L] = leftEnd[L];
-    } else {
-      parent.ends[R] = leftEnd[L];
-    }
-
-    return self;
+    cursor.parent.moveOutOf(dir, cursor);
+    return this.notify('move');
   };
 
-  _.each = function(fn) {
-    var self = this;
-    var el = self.ends[L];
-    if (!el) return self;
+  optionProcessors.leftRightIntoCmdGoes = function(updown) {
+    if (updown && updown !== 'up' && updown !== 'down') {
+      throw '"up" or "down" required for leftRightIntoCmdGoes option, '
+            + 'got "'+updown+'"';
+    }
+    return updown;
+  };
+  _.moveDir = function(dir) {
+    prayDirection(dir);
+    var cursor = this.cursor, updown = cursor.options.leftRightIntoCmdGoes;
 
-    for (;el !== self.ends[R][R]; el = el[R]) {
-      if (fn.call(self, el) === false) break;
+    if (cursor.selection) {
+      cursor.insDirOf(dir, cursor.selection.ends[dir]);
+    }
+    else if (cursor[dir]) cursor[dir].moveTowards(dir, cursor, updown);
+    else cursor.parent.moveOutOf(dir, cursor, updown);
+
+    return this.notify('move');
+  };
+  _.moveLeft = function() { return this.moveDir(L); };
+  _.moveRight = function() { return this.moveDir(R); };
+
+  /**
+   * moveUp and moveDown have almost identical algorithms:
+   * - first check left and right, if so insAtLeft/RightEnd of them
+   * - else check the parent's 'upOutOf'/'downOutOf' property:
+   *   + if it's a function, call it with the cursor as the sole argument and
+   *     use the return value as if it were the value of the property
+   *   + if it's a Node, jump up or down into it:
+   *     - if there is a cached Point in the block, insert there
+   *     - else, seekHoriz within the block to the current x-coordinate (to be
+   *       as close to directly above/below the current position as possible)
+   *   + unless it's exactly `true`, stop bubbling
+   */
+  _.moveUp = function() { return moveUpDown(this, 'up'); };
+  _.moveDown = function() { return moveUpDown(this, 'down'); };
+  function moveUpDown(self, dir) {
+    var cursor = self.notify('upDown').cursor;
+    var dirInto = dir+'Into', dirOutOf = dir+'OutOf';
+    if (cursor[R][dirInto]) cursor.insAtLeftEnd(cursor[R][dirInto]);
+    else if (cursor[L][dirInto]) cursor.insAtRightEnd(cursor[L][dirInto]);
+    else {
+      cursor.parent.bubble(function(ancestor) {
+        var prop = ancestor[dirOutOf];
+        if (prop) {
+          if (typeof prop === 'function') prop = ancestor[dirOutOf](cursor);
+          if (prop instanceof Node) cursor.jumpUpDown(ancestor, prop);
+          if (prop !== true) return false;
+        }
+      });
+    }
+    return self;
+  }
+  this.onNotify(function(e) { if (e !== 'upDown') this.upDownCache = {}; });
+
+  this.onNotify(function(e) { if (e === 'edit') this.show().deleteSelection(); });
+  _.deleteDir = function(dir) {
+    prayDirection(dir);
+    var cursor = this.cursor;
+
+    var hadSelection = cursor.selection;
+    this.notify('edit'); // deletes selection if present
+    if (!hadSelection) {
+      if (cursor[dir]) cursor[dir].deleteTowards(dir, cursor);
+      else cursor.parent.deleteOutOf(dir, cursor);
     }
 
-    return self;
-  };
+    if (cursor[L].siblingDeleted) cursor[L].siblingDeleted(cursor.options, R);
+    if (cursor[R].siblingDeleted) cursor[R].siblingDeleted(cursor.options, L);
+    cursor.parent.bubble('reflow');
 
-  _.fold = function(fold, fn) {
-    this.each(function(el) {
-      fold = fn.call(this, fold, el);
+    return this;
+  };
+  _.ctrlDeleteDir = function(dir) {
+    prayDirection(dir);
+    var cursor = this.cursor;
+    if (!cursor[L] || cursor.selection) return ctrlr.deleteDir();
+
+    this.notify('edit');
+    Fragment(cursor.parent.ends[L], cursor[L]).remove();
+    cursor.insAtDirEnd(L, cursor.parent);
+
+    if (cursor[L].siblingDeleted) cursor[L].siblingDeleted(cursor.options, R);
+    if (cursor[R].siblingDeleted) cursor[R].siblingDeleted(cursor.options, L);
+    cursor.parent.bubble('reflow');
+
+    return this;
+  };
+  _.backspace = function() { return this.deleteDir(L); };
+  _.deleteForward = function() { return this.deleteDir(R); };
+
+  this.onNotify(function(e) { if (e !== 'select') this.endSelection(); });
+  _.selectDir = function(dir) {
+    var cursor = this.notify('select').cursor, seln = cursor.selection;
+    prayDirection(dir);
+
+    if (!cursor.anticursor) cursor.startSelection();
+
+    var node = cursor[dir];
+    if (node) {
+      // "if node we're selecting towards is inside selection (hence retracting)
+      // and is on the *far side* of the selection (hence is only node selected)
+      // and the anticursor is *inside* that node, not just on the other side"
+      if (seln && seln.ends[dir] === node && cursor.anticursor[-dir] !== node) {
+        node.unselectInto(dir, cursor);
+      }
+      else node.selectTowards(dir, cursor);
+    }
+    else cursor.parent.selectOutOf(dir, cursor);
+
+    cursor.clearSelection();
+    cursor.select() || cursor.show();
+  };
+  _.selectLeft = function() { return this.selectDir(L); };
+  _.selectRight = function() { return this.selectDir(R); };
+});
+// Parser MathCommand
+var latexMathParser = (function() {
+  function commandToBlock(cmd) {
+    var block = MathBlock();
+    cmd.adopt(block, 0, 0);
+    return block;
+  }
+  function joinBlocks(blocks) {
+    var firstBlock = blocks[0] || MathBlock();
+
+    for (var i = 1; i < blocks.length; i += 1) {
+      blocks[i].children().adopt(firstBlock, firstBlock.ends[R], 0);
+    }
+
+    return firstBlock;
+  }
+
+  var string = Parser.string;
+  var regex = Parser.regex;
+  var letter = Parser.letter;
+  var any = Parser.any;
+  var optWhitespace = Parser.optWhitespace;
+  var succeed = Parser.succeed;
+  var fail = Parser.fail;
+
+  // Parsers yielding MathCommands
+  var variable = letter.map(function(c) { return Letter(c); });
+  var symbol = regex(/^[^${}\\_^]/).map(function(c) { return VanillaSymbol(c); });
+
+  var controlSequence =
+    regex(/^[^\\a-eg-zA-Z]/) // hotfix #164; match MathBlock::write
+    .or(string('\\').then(
+      regex(/^[a-z]+/i)
+      .or(regex(/^\s+/).result(' '))
+      .or(any)
+    )).then(function(ctrlSeq) {
+      var cmdKlass = LatexCmds[ctrlSeq];
+
+      if (cmdKlass) {
+        return cmdKlass(ctrlSeq).parser();
+      }
+      else {
+        return fail('unknown command: \\'+ctrlSeq);
+      }
+    })
+  ;
+
+  var command =
+    controlSequence
+    .or(variable)
+    .or(symbol)
+  ;
+
+  // Parsers yielding MathBlocks
+  var mathGroup = string('{').then(function() { return mathSequence; }).skip(string('}'));
+  var mathBlock = optWhitespace.then(mathGroup.or(command.map(commandToBlock)));
+  var mathSequence = mathBlock.many().map(joinBlocks).skip(optWhitespace);
+
+  var optMathBlock =
+    string('[').then(
+      mathBlock.then(function(block) {
+        return block.join('latex') !== ']' ? succeed(block) : fail();
+      })
+      .many().map(joinBlocks).skip(optWhitespace)
+    ).skip(string(']'))
+  ;
+
+  var latexMath = mathSequence;
+
+  latexMath.block = mathBlock;
+  latexMath.optBlock = optMathBlock;
+  return latexMath;
+})();
+
+Controller.open(function(_, super_) {
+  _.exportLatex = function() {
+    return this.root.latex().replace(/(\\[a-z]+) (?![a-z])/ig,'$1');
+  };
+  _.writeLatex = function(latex) {
+    var cursor = this.notify('edit').cursor;
+
+    var all = Parser.all;
+    var eof = Parser.eof;
+
+    var block = latexMathParser.skip(eof).or(all.result(false)).parse(latex);
+
+    if (block && !block.isEmpty()) {
+      block.children().adopt(cursor.parent, cursor[L], cursor[R]);
+      var jQ = block.jQize();
+      jQ.insertBefore(cursor.jQ);
+      cursor[L] = block.ends[R];
+      block.finalizeInsert(cursor.options, cursor);
+      if (block.ends[R][R].siblingCreated) block.ends[R][R].siblingCreated(cursor.options, L);
+      if (block.ends[L][L].siblingCreated) block.ends[L][L].siblingCreated(cursor.options, R);
+      cursor.parent.bubble('reflow');
+    }
+
+    return this;
+  };
+  _.renderLatexMath = function(latex) {
+    var root = this.root, cursor = this.cursor;
+
+    var all = Parser.all;
+    var eof = Parser.eof;
+
+    var block = latexMathParser.skip(eof).or(all.result(false)).parse(latex);
+
+    root.eachChild('postOrder', 'dispose');
+    root.ends[L] = root.ends[R] = 0;
+
+    if (block) {
+      block.children().adopt(root, 0, 0);
+    }
+
+    var jQ = root.jQ;
+
+    if (block) {
+      var html = block.join('html');
+      jQ.html(html);
+      root.jQize(jQ.children());
+      root.finalizeInsert(cursor.options);
+    }
+    else {
+      jQ.empty();
+    }
+
+    delete cursor.selection;
+    cursor.insAtRightEnd(root);
+  };
+  _.renderLatexText = function(latex) {
+    var root = this.root, cursor = this.cursor;
+
+    root.jQ.children().slice(1).remove();
+    root.eachChild('postOrder', 'dispose');
+    root.ends[L] = root.ends[R] = 0;
+    delete cursor.selection;
+    cursor.show().insAtRightEnd(root);
+
+    var regex = Parser.regex;
+    var string = Parser.string;
+    var eof = Parser.eof;
+    var all = Parser.all;
+
+    // Parser RootMathCommand
+    var mathMode = string('$').then(latexMathParser)
+      // because TeX is insane, math mode doesn't necessarily
+      // have to end.  So we allow for the case that math mode
+      // continues to the end of the stream.
+      .skip(string('$').or(eof))
+      .map(function(block) {
+        // HACK FIXME: this shouldn't have to have access to cursor
+        var rootMathCommand = RootMathCommand(cursor);
+
+        rootMathCommand.createBlocks();
+        var rootMathBlock = rootMathCommand.ends[L];
+        block.children().adopt(rootMathBlock, 0, 0);
+
+        return rootMathCommand;
+      })
+    ;
+
+    var escapedDollar = string('\\$').result('$');
+    var textChar = escapedDollar.or(regex(/^[^$]/)).map(VanillaSymbol);
+    var latexText = mathMode.or(textChar).many();
+    var commands = latexText.skip(eof).or(all.result(false)).parse(latex);
+
+    if (commands) {
+      for (var i = 0; i < commands.length; i += 1) {
+        commands[i].adopt(root, root.ends[R], 0);
+      }
+
+      root.jQize().appendTo(root.jQ);
+
+      root.finalizeInsert(cursor.options);
+    }
+  };
+});
+/********************************************************
+ * Deals with mouse events for clicking, drag-to-select
+ *******************************************************/
+
+Controller.open(function(_) {
+  _.delegateMouseEvents = function() {
+    var ultimateRootjQ = this.root.jQ;
+    //drag-to-select event handling
+    this.container.bind('mousedown.mathquill', function(e) {
+      var rootjQ = $(e.target).closest('.mq-root-block');
+      var root = Node.byId[rootjQ.attr(mqBlockId) || ultimateRootjQ.attr(mqBlockId)];
+      var ctrlr = root.controller, cursor = ctrlr.cursor, blink = cursor.blink;
+      var textareaSpan = ctrlr.textareaSpan, textarea = ctrlr.textarea;
+
+      var target;
+      function mousemove(e) { target = $(e.target); }
+      function docmousemove(e) {
+        if (!cursor.anticursor) cursor.startSelection();
+        ctrlr.seek(target, e.pageX, e.pageY).cursor.select();
+        target = undefined;
+      }
+      // outside rootjQ, the MathQuill node corresponding to the target (if any)
+      // won't be inside this root, so don't mislead Controller::seek with it
+
+      function mouseup(e) {
+        cursor.blink = blink;
+        if (!cursor.selection) {
+          if (ctrlr.editable) {
+            cursor.show();
+          }
+          else {
+            textareaSpan.detach();
+          }
+        }
+
+        // delete the mouse handlers now that we're not dragging anymore
+        rootjQ.unbind('mousemove', mousemove);
+        $(e.target.ownerDocument).unbind('mousemove', docmousemove).unbind('mouseup', mouseup);
+      }
+
+      if (ctrlr.blurred) {
+        if (!ctrlr.editable) rootjQ.prepend(textareaSpan);
+        textarea.focus();
+      }
+      e.preventDefault(); // doesn't work in IE≤8, but it's a one-line fix:
+      e.target.unselectable = true; // http://jsbin.com/yagekiji/1
+
+      cursor.blink = noop;
+      ctrlr.seek($(e.target), e.pageX, e.pageY).cursor.startSelection();
+
+      rootjQ.mousemove(mousemove);
+      $(e.target.ownerDocument).mousemove(docmousemove).mouseup(mouseup);
+      // listen on document not just body to not only hear about mousemove and
+      // mouseup on page outside field, but even outside page, except iframes: https://github.com/mathquill/mathquill/commit/8c50028afcffcace655d8ae2049f6e02482346c5#commitcomment-6175800
+    });
+  }
+});
+
+Controller.open(function(_) {
+  _.seek = function(target, pageX, pageY) {
+    var cursor = this.notify('select').cursor;
+
+    if (target) {
+      var nodeId = target.attr(mqBlockId) || target.attr(mqCmdId);
+      if (!nodeId) {
+        var targetParent = target.parent();
+        nodeId = targetParent.attr(mqBlockId) || targetParent.attr(mqCmdId);
+      }
+    }
+    var node = nodeId ? Node.byId[nodeId] : this.root;
+    pray('nodeId is the id of some Node that exists', node);
+
+    // don't clear selection until after getting node from target, in case
+    // target was selection span, otherwise target will have no parent and will
+    // seek from root, which is less accurate (e.g. fraction)
+    cursor.clearSelection().show();
+
+    node.seek(pageX, cursor);
+    this.scrollHoriz(); // before .selectFrom when mouse-selecting, so
+                        // always hits no-selection case in scrollHoriz and scrolls slower
+    return this;
+  };
+});
+/***********************************************
+ * Horizontal panning for editable fields that
+ * overflow their width
+ **********************************************/
+
+Controller.open(function(_) {
+  _.scrollHoriz = function() {
+    var cursor = this.cursor, seln = cursor.selection;
+    var rootRect = this.root.jQ[0].getBoundingClientRect();
+    if (!seln) {
+      var x = cursor.jQ[0].getBoundingClientRect().left;
+      if (x > rootRect.right - 20) var scrollBy = x - (rootRect.right - 20);
+      else if (x < rootRect.left + 20) var scrollBy = x - (rootRect.left + 20);
+      else return;
+    }
+    else {
+      var rect = seln.jQ[0].getBoundingClientRect();
+      var overLeft = rect.left - (rootRect.left + 20);
+      var overRight = rect.right - (rootRect.right - 20);
+      if (seln.ends[L] === cursor[R]) {
+        if (overLeft < 0) var scrollBy = overLeft;
+        else if (overRight > 0) {
+          if (rect.left - overRight < rootRect.left + 20) var scrollBy = overLeft;
+          else var scrollBy = overRight;
+        }
+        else return;
+      }
+      else {
+        if (overRight > 0) var scrollBy = overRight;
+        else if (overLeft < 0) {
+          if (rect.right - overLeft > rootRect.right - 20) var scrollBy = overRight;
+          else var scrollBy = overLeft;
+        }
+        else return;
+      }
+    }
+    this.root.jQ.stop().animate({ scrollLeft: '+=' + scrollBy}, 100);
+  };
+});
+/*********************************************
+ * Manage the MathQuill instance's textarea
+ * (as owned by the Controller)
+ ********************************************/
+
+Controller.open(function(_) {
+  Options.p.substituteTextarea = function() {
+    return $('<textarea autocapitalize=off autocomplete=off autocorrect=off ' +
+               'spellcheck=false x-palm-disable-ste-all=true />')[0];
+  };
+  _.createTextarea = function() {
+    var textareaSpan = this.textareaSpan = $('<span class="mq-textarea"></span>'),
+      textarea = this.options.substituteTextarea();
+    if (!textarea.nodeType) {
+      throw 'substituteTextarea() must return a DOM element, got ' + textarea;
+    }
+    textarea = this.textarea = $(textarea).appendTo(textareaSpan);
+
+    var ctrlr = this;
+    ctrlr.cursor.selectionChanged = function() { ctrlr.selectionChanged(); };
+    ctrlr.container.bind('copy', function() { ctrlr.setTextareaSelection(); });
+  };
+  _.selectionChanged = function() {
+    var ctrlr = this;
+    forceIERedraw(ctrlr.container[0]);
+
+    // throttle calls to setTextareaSelection(), because setting textarea.value
+    // and/or calling textarea.select() can have anomalously bad performance:
+    // https://github.com/mathquill/mathquill/issues/43#issuecomment-1399080
+    if (ctrlr.textareaSelectionTimeout === undefined) {
+      ctrlr.textareaSelectionTimeout = setTimeout(function() {
+        ctrlr.setTextareaSelection();
+      });
+    }
+  };
+  _.setTextareaSelection = function() {
+    this.textareaSelectionTimeout = undefined;
+    var latex = '';
+    if (this.cursor.selection) {
+      latex = this.cursor.selection.join('latex');
+      if (this.options.statelessClipboard) {
+        // FIXME: like paste, only this works for math fields; should ask parent
+        latex = '$' + latex + '$';
+      }
+    }
+    this.selectFn(latex);
+  };
+  _.staticMathTextareaEvents = function() {
+    var ctrlr = this, root = ctrlr.root, cursor = ctrlr.cursor,
+      textarea = ctrlr.textarea, textareaSpan = ctrlr.textareaSpan;
+
+    this.container.prepend('<span class="mq-selectable">$'+ctrlr.exportLatex()+'$</span>');
+    ctrlr.blurred = true;
+    textarea.bind('cut paste', false)
+    .focus(function() { ctrlr.blurred = false; }).blur(function() {
+      if (cursor.selection) cursor.selection.clear();
+      setTimeout(detach); //detaching during blur explodes in WebKit
+    });
+    function detach() {
+      textareaSpan.detach();
+      ctrlr.blurred = true;
+    }
+
+    ctrlr.selectFn = function(text) {
+      textarea.val(text);
+      if (text) textarea.select();
+    };
+  };
+  _.editablesTextareaEvents = function() {
+    var ctrlr = this, root = ctrlr.root, cursor = ctrlr.cursor,
+      textarea = ctrlr.textarea, textareaSpan = ctrlr.textareaSpan;
+
+    var keyboardEventsShim = saneKeyboardEvents(textarea, this);
+    this.selectFn = function(text) { keyboardEventsShim.select(text); };
+
+    this.container.prepend(textareaSpan)
+    .on('cut', function(e) {
+      if (cursor.selection) {
+        setTimeout(function() {
+          ctrlr.notify('edit'); // deletes selection if present
+          cursor.parent.bubble('reflow');
+        });
+      }
     });
 
-    return fold;
+    this.focusBlurEvents();
+  };
+  _.typedText = function(ch) {
+    if (ch === '\n') return this.handle('enter');
+    var cursor = this.notify().cursor;
+    cursor.parent.write(cursor, ch);
+    this.scrollHoriz();
+  };
+  _.paste = function(text) {
+    // TODO: document `statelessClipboard` config option in README, after
+    // making it work like it should, that is, in both text and math mode
+    // (currently only works in math fields, so worse than pointless, it
+    //  only gets in the way by \text{}-ifying pasted stuff and $-ifying
+    //  cut/copied LaTeX)
+    if (this.options.statelessClipboard) {
+      if (text.slice(0,1) === '$' && text.slice(-1) === '$') {
+        text = text.slice(1, -1);
+      }
+      else {
+        text = '\\text{'+text+'}';
+      }
+    }
+    // FIXME: this always inserts math or a TextBlock, even in a RootTextBlock
+    this.writeLatex(text).cursor.show();
   };
 });
 /*************************************************
  * Abstract classes of math blocks and commands.
  ************************************************/
 
-var uuid = (function() {
-  var id = 0;
-
-  return function() { return id += 1; };
-})();
-
 /**
  * Math tree node base class.
  * Some math-tree-specific extensions to Node.
  * Both MathBlock's and MathCommand's descend from it.
  */
-var MathElement = P(Node, function(_, _super) {
-  _.init = function(obj) {
-    _super.init.call(this);
-    this.id = uuid();
-    MathElement[this.id] = this;
-  };
-
-  _.toString = function() {
-    return '[MathElement '+this.id+']';
-  };
-
-  _.bubble = function(event /*, args... */) {
-    var args = __slice.call(arguments, 1);
-
-    for (var ancestor = this; ancestor; ancestor = ancestor.parent) {
-      var res = ancestor[event] && ancestor[event].apply(ancestor, args);
-      if (res === false) break;
-    }
-
-    return this;
-  };
-
-  _.postOrder = function(fn /*, args... */) {
-    var args = __slice.call(arguments, 1);
-
-    if (typeof fn === 'string') {
-      var methodName = fn;
-      fn = function(el) {
-        if (methodName in el) el[methodName].apply(el, args);
-      };
-    }
-
-    (function recurse(desc) {
-      desc.eachChild(recurse);
-      fn(desc);
-    })(this);
-  };
-
-  _.jQ = $();
-  _.jQadd = function(jQ) { this.jQ = this.jQ.add(jQ); };
-
-  this.jQize = function(html) {
-    // Sets the .jQ of the entire math subtree rooted at this command.
-    // Expects .createBlocks() to have been called already, since it
-    // calls .html().
-    var jQ = $(html);
-    jQ.find('*').andSelf().each(function() {
-      var jQ = $(this),
-        cmdId = jQ.attr('mathquill-command-id'),
-        blockId = jQ.attr('mathquill-block-id');
-      if (cmdId) MathElement[cmdId].jQadd(jQ);
-      if (blockId) MathElement[blockId].jQadd(jQ);
-    });
-    return jQ;
-  };
-
-  _.finalizeInsert = function() {
+var MathElement = P(Node, function(_, super_) {
+  _.finalizeInsert = function(options, cursor) { // `cursor` param is only for
+      // SupSub::contactWeld, and is deliberately only passed in by writeLatex,
+      // see ea7307eb4fac77c149a11ffdf9a831df85247693
     var self = this;
-    self.postOrder('finalizeTree');
+    self.postOrder('finalizeTree', options);
+    self.postOrder('contactWeld', cursor);
 
     // note: this order is important.
     // empty elements need the empty box provided by blur to
     // be present in order for their dimensions to be measured
-    // correctly in redraw.
+    // correctly by 'reflow' handlers.
     self.postOrder('blur');
 
-    // adjust context-sensitive spacing
-    self.postOrder('respace');
-    if (self[R].respace) self[R].respace();
-    if (self[L].respace) self[L].respace();
-
-    self.postOrder('redraw');
-    self.bubble('redraw');
+    self.postOrder('reflow');
+    if (self[R].siblingCreated) self[R].siblingCreated(options, L);
+    if (self[L].siblingCreated) self[L].siblingCreated(options, R);
+    self.bubble('reflow');
   };
 });
 
@@ -914,10 +2358,10 @@ var MathElement = P(Node, function(_, _super) {
  * Commands and operators, like subscripts, exponents, or fractions.
  * Descendant commands are organized into blocks.
  */
-var MathCommand = P(MathElement, function(_, _super) {
+var MathCommand = P(MathElement, function(_, super_) {
   _.init = function(ctrlSeq, htmlTemplate, textTemplate) {
     var cmd = this;
-    _super.init.call(cmd);
+    super_.init.call(cmd);
 
     if (!cmd.ctrlSeq) cmd.ctrlSeq = ctrlSeq;
     if (htmlTemplate) cmd.htmlTemplate = htmlTemplate;
@@ -956,17 +2400,12 @@ var MathCommand = P(MathElement, function(_, _super) {
     var replacedFragment = cmd.replacedFragment;
 
     cmd.createBlocks();
-    MathElement.jQize(cmd.html());
+    super_.createLeftOf.call(cmd, cursor);
     if (replacedFragment) {
       replacedFragment.adopt(cmd.ends[L], 0, 0);
       replacedFragment.jQ.appendTo(cmd.ends[L].jQ);
     }
-
-    cursor.jQ.before(cmd.jQ);
-    cursor[L] = cmd.adopt(cursor.parent, cursor[L], cursor[R]);
-
-    cmd.finalizeInsert(cursor);
-
+    cmd.finalizeInsert(cursor.options);
     cmd.placeCursor(cursor);
   };
   _.createBlocks = function() {
@@ -979,7 +2418,6 @@ var MathCommand = P(MathElement, function(_, _super) {
       newBlock.adopt(cmd, cmd.ends[R], 0);
     }
   };
-  _.respace = noop; //placeholder for context-sensitive spacing
   _.placeCursor = function(cursor) {
     //insert the cursor at the right end of the first empty child, searching
     //left-to-right, or if none empty, the right end child
@@ -988,15 +2426,69 @@ var MathCommand = P(MathElement, function(_, _super) {
     }));
   };
 
-  // remove()
-  _.remove = function() {
-    this.disown();
-    this.jQ.remove();
-
-    this.postOrder(function(el) { delete MathElement[el.id]; });
-
-    return this;
+  // editability methods: called by the cursor for editing, cursor movements,
+  // and selection of the MathQuill tree, these all take in a direction and
+  // the cursor
+  _.moveTowards = function(dir, cursor, updown) {
+    var updownInto = updown && this[updown+'Into'];
+    cursor.insAtDirEnd(-dir, updownInto || this.ends[-dir]);
   };
+  _.deleteTowards = function(dir, cursor) {
+    if (this.isEmpty()) cursor[dir] = this.remove()[dir];
+    else this.moveTowards(dir, cursor, null);
+  };
+  _.selectTowards = function(dir, cursor) {
+    cursor[-dir] = this;
+    cursor[dir] = this[dir];
+  };
+  _.selectChildren = function() {
+    return Selection(this, this);
+  };
+  _.unselectInto = function(dir, cursor) {
+    cursor.insAtDirEnd(-dir, cursor.anticursor.ancestors[this.id]);
+  };
+  _.seek = function(pageX, cursor) {
+    function getBounds(node) {
+      var bounds = {}
+      bounds[L] = node.jQ.offset().left;
+      bounds[R] = bounds[L] + node.jQ.outerWidth();
+      return bounds;
+    }
+
+    var cmd = this;
+    var cmdBounds = getBounds(cmd);
+
+    if (pageX < cmdBounds[L]) return cursor.insLeftOf(cmd);
+    if (pageX > cmdBounds[R]) return cursor.insRightOf(cmd);
+
+    var leftLeftBound = cmdBounds[L];
+    cmd.eachChild(function(block) {
+      var blockBounds = getBounds(block);
+      if (pageX < blockBounds[L]) {
+        // closer to this block's left bound, or the bound left of that?
+        if (pageX - leftLeftBound < blockBounds[L] - pageX) {
+          if (block[L]) cursor.insAtRightEnd(block[L]);
+          else cursor.insLeftOf(cmd);
+        }
+        else cursor.insAtLeftEnd(block);
+        return false;
+      }
+      else if (pageX > blockBounds[R]) {
+        if (block[R]) leftLeftBound = blockBounds[R]; // continue to next block
+        else { // last (rightmost) block
+          // closer to this block's right bound, or the cmd's right bound?
+          if (cmdBounds[R] - pageX < pageX - blockBounds[R]) {
+            cursor.insRightOf(cmd);
+          }
+          else cursor.insAtRightEnd(block);
+        }
+      }
+      else {
+        block.seek(pageX, cursor);
+        return false;
+      }
+    });
+  }
 
   // methods involved in creating and cross-linking with HTML DOM nodes
   /*
@@ -1127,11 +2619,11 @@ var MathCommand = P(MathElement, function(_, _super) {
 /**
  * Lightweight command without blocks or children.
  */
-var Symbol = P(MathCommand, function(_, _super) {
+var Symbol = P(MathCommand, function(_, super_) {
   _.init = function(ctrlSeq, html, text) {
     if (!text) text = ctrlSeq && ctrlSeq.length > 1 ? ctrlSeq.slice(1) : ctrlSeq;
 
-    _super.init.call(this, ctrlSeq, html, [ text ]);
+    super_.init.call(this, ctrlSeq, html, [ text ]);
   };
 
   _.parser = function() { return Parser.succeed(this); };
@@ -1141,10 +2633,39 @@ var Symbol = P(MathCommand, function(_, _super) {
     replacedFragment.remove();
   };
   _.createBlocks = noop;
+
+  _.moveTowards = function(dir, cursor) {
+    cursor.jQ.insDirOf(dir, this.jQ);
+    cursor[-dir] = this;
+    cursor[dir] = this[dir];
+  };
+  _.deleteTowards = function(dir, cursor) {
+    cursor[dir] = this.remove()[dir];
+  };
+  _.seek = function(pageX, cursor) {
+    // insert at whichever side the click was closer to
+    if (pageX - this.jQ.offset().left < this.jQ.outerWidth()/2)
+      cursor.insLeftOf(this);
+    else
+      cursor.insRightOf(this);
+  };
+
   _.latex = function(){ return this.ctrlSeq; };
   _.text = function(){ return this.textTemplate; };
   _.placeCursor = noop;
   _.isEmpty = function(){ return true; };
+});
+var VanillaSymbol = P(Symbol, function(_, super_) {
+  _.init = function(ch, html) {
+    super_.init.call(this, ch, '<span>'+(html || ch)+'</span>');
+  };
+});
+var BinaryOperator = P(Symbol, function(_, super_) {
+  _.init = function(ctrlSeq, html, text) {
+    super_.init.call(this,
+      ctrlSeq, '<span class="mq-binary-operator">'+html+'</span>', text
+    );
+  };
 });
 
 /**
@@ -1152,1000 +2673,167 @@ var Symbol = P(MathCommand, function(_, _super) {
  * symbols and operators that descend (in the Math DOM tree) from
  * ancestor operators.
  */
-var MathBlock = P(MathElement, function(_) {
+var MathBlock = P(MathElement, function(_, super_) {
   _.join = function(methodName) {
     return this.foldChildren('', function(fold, child) {
       return fold + child[methodName]();
     });
   };
+  _.html = function() { return this.join('html'); };
   _.latex = function() { return this.join('latex'); };
   _.text = function() {
-    return this.ends[L] === this.ends[R] ?
+    return (this.ends[L] === this.ends[R] && this.ends[L] !== 0) ?
       this.ends[L].text() :
-      '(' + this.join('text') + ')'
+      this.join('text')
     ;
   };
-  _.isEmpty = function() {
-    return this.ends[L] === 0 && this.ends[R] === 0;
+
+  _.keystroke = function(key, e, ctrlr) {
+    if (ctrlr.options.spaceBehavesLikeTab
+        && (key === 'Spacebar' || key === 'Shift-Spacebar')) {
+      e.preventDefault();
+      ctrlr.escapeDir(key === 'Shift-Spacebar' ? L : R, key, e);
+      return;
+    }
+    return super_.keystroke.apply(this, arguments);
   };
-  _.write = function(cursor, ch, replacedFragment) {
-    var cmd;
-    if (ch.match(/^[a-eg-zA-Z]$/)) //exclude f because want florin
-      cmd = Variable(ch);
-    else if (cmd = CharCmds[ch] || LatexCmds[ch])
-      cmd = cmd(ch);
+
+  // editability methods: called by the cursor for editing, cursor movements,
+  // and selection of the MathQuill tree, these all take in a direction and
+  // the cursor
+  _.moveOutOf = function(dir, cursor, updown) {
+    var updownInto = updown && this.parent[updown+'Into'];
+    if (!updownInto && this[dir]) cursor.insAtDirEnd(-dir, this[dir]);
+    else cursor.insDirOf(dir, this.parent);
+  };
+  _.selectOutOf = function(dir, cursor) {
+    cursor.insDirOf(dir, this.parent);
+  };
+  _.deleteOutOf = function(dir, cursor) {
+    cursor.unwrapGramp();
+  };
+  _.seek = function(pageX, cursor) {
+    var node = this.ends[R];
+    if (!node || node.jQ.offset().left + node.jQ.outerWidth() < pageX) {
+      return cursor.insAtRightEnd(this);
+    }
+    if (pageX < this.ends[L].jQ.offset().left) return cursor.insAtLeftEnd(this);
+    while (pageX < node.jQ.offset().left) node = node[L];
+    return node.seek(pageX, cursor);
+  };
+  _.chToCmd = function(ch) {
+    var cons;
+    // exclude f because it gets a dedicated command with more spacing
+    if (ch.match(/^[a-eg-zA-Z]$/))
+      return Letter(ch);
+    else if (/^\d$/.test(ch))
+      return Digit(ch);
+    else if (cons = CharCmds[ch] || LatexCmds[ch])
+      return cons(ch);
     else
-      cmd = VanillaSymbol(ch);
-
-    if (replacedFragment) cmd.replaces(replacedFragment);
-
-    cmd.createLeftOf(cursor);
+      return VanillaSymbol(ch);
   };
+  _.write = function(cursor, ch) {
+    var cmd = this.chToCmd(ch);
+    if (cursor.selection) cmd.replaces(cursor.replaceSelection());
+    cmd.createLeftOf(cursor.show());
+  };
+
   _.focus = function() {
-    this.jQ.addClass('hasCursor');
-    this.jQ.removeClass('empty');
+    this.jQ.addClass('mq-hasCursor');
+    this.jQ.removeClass('mq-empty');
 
     return this;
   };
   _.blur = function() {
-    this.jQ.removeClass('hasCursor');
+    this.jQ.removeClass('mq-hasCursor');
     if (this.isEmpty())
-      this.jQ.addClass('empty');
+      this.jQ.addClass('mq-empty');
 
     return this;
   };
 });
 
-/**
- * Math tree fragment base class.
- * Some math-tree-specific extensions to Fragment.
- */
-var MathFragment = P(Fragment, function(_, _super) {
-  _.init = function(leftEnd, rightEnd) {
-    // just select one thing if only one argument
-    _super.init.call(this, leftEnd, rightEnd || leftEnd);
-    this.jQ = this.fold($(), function(jQ, child){ return child.jQ.add(jQ); });
-  };
-  _.latex = function() {
-    return this.fold('', function(latex, el){ return latex + el.latex(); });
-  };
-  _.remove = function() {
-    this.jQ.remove();
-
-    this.each(function(el) {
-      el.postOrder(function(desc) {
-        delete MathElement[desc.id];
-      });
-    });
-
-    return this.disown();
-  };
-});
-/*********************************************
- * Root math elements with event delegation.
- ********************************************/
-
-function createRoot(jQ, root, textbox, editable) {
-  var contents = jQ.contents().detach();
-
-  if (!textbox) {
-    jQ.addClass('mathquill-rendered-math');
-  }
-
-  root.jQ = jQ.attr(mqBlockId, root.id);
-  root.revert = function() {
-    jQ.empty().unbind('.mathquill')
-      .removeClass('mathquill-rendered-math mathquill-editable mathquill-textbox')
-      .append(contents);
-  };
-
-  var cursor = root.cursor = Cursor(root);
-
-  root.renderLatex(contents.text());
-
-  //textarea stuff
-  var textareaSpan = root.textarea = $('<span class="textarea"><textarea></textarea></span>'),
-    textarea = textareaSpan.children();
-
-  /******
-   * TODO [Han]: Document this
-   */
-  var textareaSelectionTimeout;
-  root.selectionChanged = function() {
-    if (textareaSelectionTimeout === undefined) {
-      textareaSelectionTimeout = setTimeout(setTextareaSelection);
-    }
-    forceIERedraw(jQ[0]);
-  };
-  function setTextareaSelection() {
-    textareaSelectionTimeout = undefined;
-    var latex = cursor.selection ? '$'+cursor.selection.latex()+'$' : '';
-    textareaManager.select(latex);
-  }
-
-  //prevent native selection except textarea
-  jQ.bind('selectstart.mathquill', function(e) {
-    if (e.target !== textarea[0]) e.preventDefault();
-    e.stopPropagation();
-  });
-
-  //drag-to-select event handling
-  var anticursor, blink = cursor.blink;
-  jQ.bind('mousedown.mathquill', function(e) {
-    function mousemove(e) {
-      cursor.seek($(e.target), e.pageX, e.pageY);
-
-      if (cursor[L] !== anticursor[L]
-          || cursor.parent !== anticursor.parent) {
-        cursor.selectFrom(anticursor);
-      }
-
-      return false;
-    }
-
-    // docmousemove is attached to the document, so that
-    // selection still works when the mouse leaves the window.
-    function docmousemove(e) {
-      // [Han]: i delete the target because of the way seek works.
-      // it will not move the mouse to the target, but will instead
-      // just seek those X and Y coordinates.  If there is a target,
-      // it will try to move the cursor to document, which will not work.
-      // cursor.seek needs to be refactored.
-      delete e.target;
-
-      return mousemove(e);
-    }
-
-    function mouseup(e) {
-      anticursor = undefined;
-      cursor.blink = blink;
-      if (!cursor.selection) {
-        if (editable) {
-          cursor.show();
-        }
-        else {
-          textareaSpan.detach();
-        }
-      }
-
-      // delete the mouse handlers now that we're not dragging anymore
-      jQ.unbind('mousemove', mousemove);
-      $(e.target.ownerDocument).unbind('mousemove', docmousemove).unbind('mouseup', mouseup);
-    }
-
-    setTimeout(function() { textarea.focus(); textarea.focused = true; });
-      // preventDefault won't prevent focus on mousedown in IE<9
-      // that means immediately after this mousedown, whatever was
-      // mousedown-ed will receive focus
-      // http://bugs.jquery.com/ticket/10345
-
-    cursor.blink = noop;
-    cursor.seek($(e.target), e.pageX, e.pageY);
-
-    anticursor = Point(cursor.parent, cursor[L], cursor[R]);
-
-    if (!editable && !textarea.focused) jQ.prepend(textareaSpan);
-
-    jQ.mousemove(mousemove);
-    $(e.target.ownerDocument).mousemove(docmousemove).mouseup(mouseup);
-
-    return false;
-  });
-
-  if (!editable) {
-    var textareaManager = manageTextarea(textarea, { container: jQ });
-    jQ.bind('cut paste', false).bind('copy', setTextareaSelection)
-      .prepend('<span class="selectable">$'+root.latex()+'$</span>');
-    textarea.blur(function() {
-      cursor.clearSelection();
-      setTimeout(detach); //detaching during blur explodes in WebKit
-    });
-    function detach() {
-      textareaSpan.detach();
-      textarea.focused = false;
-    }
-    return;
-  }
-
-  var textareaManager = manageTextarea(textarea, {
-    container: jQ,
-    key: function(key, evt) {
-      cursor.parent.bubble('onKey', key, evt);
-    },
-    text: function(text) {
-      cursor.parent.bubble('onText', text);
-    },
-    cut: function(e) {
-      if (cursor.selection) {
-        setTimeout(function() {
-          cursor.prepareEdit();
-          cursor.parent.bubble('redraw');
-        });
-      }
-
-      e.stopPropagation();
-    },
-    paste: function(text) {
-      // FIXME HACK the parser in RootTextBlock needs to be moved to
-      // Cursor::writeLatex or something so this'll work with
-      // MathQuill textboxes
-      if (text.slice(0,1) === '$' && text.slice(-1) === '$') {
-        text = text.slice(1, -1);
-      }
-      else {
-        text = '\\text{' + text + '}';
-      }
-
-      cursor.writeLatex(text).show();
-    }
-  });
-
-  jQ.prepend(textareaSpan);
-
-  //root CSS classes
-  jQ.addClass('mathquill-editable');
-  if (textbox)
-    jQ.addClass('mathquill-textbox');
-
-  //focus and blur handling
-  textarea.focus(function(e) {
-    if (!cursor.parent)
-      cursor.insAtRightEnd(root);
-    cursor.parent.jQ.addClass('hasCursor');
-    if (cursor.selection) {
-      cursor.selection.jQ.removeClass('blur');
-      setTimeout(root.selectionChanged); //re-select textarea contents after tabbing away and back
-    }
-    else
-      cursor.show();
-    e.stopPropagation();
-  }).blur(function(e) {
-    cursor.hide().parent.blur();
-    if (cursor.selection)
-      cursor.selection.jQ.addClass('blur');
-    e.stopPropagation();
-  });
-
-  jQ.bind('focus.mathquill blur.mathquill', function(e) {
-    textarea.trigger(e);
-  }).blur();
-}
-
-var RootMathBlock = P(MathBlock, function(_, _super) {
-  _.latex = function() {
-    return _super.latex.call(this).replace(/(\\[a-z]+) (?![a-z])/ig,'$1');
-  };
-  _.text = function() {
-    return this.foldChildren('', function(text, child) {
-      return text + child.text();
-    });
-  };
-  _.renderLatex = function(latex) {
-    var jQ = this.jQ;
-
-    jQ.children().slice(1).remove();
-    this.ends[L] = this.ends[R] = 0;
-
-    delete this.cursor.selection;
-    this.cursor.insAtRightEnd(this).writeLatex(latex);
-  };
-  _.onKey = function(key, e) {
-    switch (key) {
-    case 'Ctrl-Shift-Backspace':
-    case 'Ctrl-Backspace':
-      while (this.cursor[L] || this.cursor.selection) {
-        this.cursor.backspace();
-      }
-      break;
-
-    case 'Shift-Backspace':
-    case 'Backspace':
-      this.cursor.backspace();
-      break;
-
-    // Tab or Esc -> go one block right if it exists, else escape right.
-    case 'Esc':
-    case 'Tab':
-    case 'Spacebar':
-      var parent = this.cursor.parent;
-      // cursor is in root editable, continue default
-      if (parent === this.cursor.root) {
-        if (key === 'Spacebar') e.preventDefault();
-        return;
-      }
-
-      this.cursor.prepareMove();
-      if (parent[R]) {
-        // go one block right
-        this.cursor.insAtLeftEnd(parent[R]);
-      } else {
-        // get out of the block
-        this.cursor.insRightOf(parent.parent);
-      }
-      break;
-
-    // Shift-Tab -> go one block left if it exists, else escape left.
-    case 'Shift-Tab':
-    case 'Shift-Esc':
-    case 'Shift-Spacebar':
-      var parent = this.cursor.parent;
-      //cursor is in root editable, continue default
-      if (parent === this.cursor.root) {
-        if (key === 'Shift-Spacebar') e.preventDefault();
-        return;
-      }
-
-      this.cursor.prepareMove();
-      if (parent[L]) {
-        // go one block left
-        this.cursor.insAtRightEnd(parent[L]);
-      } else {
-        //get out of the block
-        this.cursor.insLeftOf(parent.parent);
-      }
-      break;
-
-    // Prevent newlines from showing up
-    case 'Enter': break;
-
-
-    // End -> move to the end of the current block.
-    case 'End':
-      this.cursor.prepareMove().insAtRightEnd(this.cursor.parent);
-      break;
-
-    // Ctrl-End -> move all the way to the end of the root block.
-    case 'Ctrl-End':
-      this.cursor.prepareMove().insAtRightEnd(this);
-      break;
-
-    // Shift-End -> select to the end of the current block.
-    case 'Shift-End':
-      while (this.cursor[R]) {
-        this.cursor.selectRight();
-      }
-      break;
-
-    // Ctrl-Shift-End -> select to the end of the root block.
-    case 'Ctrl-Shift-End':
-      while (this.cursor[R] || this.cursor.parent !== this) {
-        this.cursor.selectRight();
-      }
-      break;
-
-    // Home -> move to the start of the root block or the current block.
-    case 'Home':
-      this.cursor.prepareMove().insAtLeftEnd(this.cursor.parent);
-      break;
-
-    // Ctrl-Home -> move to the start of the current block.
-    case 'Ctrl-Home':
-      this.cursor.prepareMove().insAtLeftEnd(this);
-      break;
-
-    // Shift-Home -> select to the start of the current block.
-    case 'Shift-Home':
-      while (this.cursor[L]) {
-        this.cursor.selectLeft();
-      }
-      break;
-
-    // Ctrl-Shift-Home -> move to the start of the root block.
-    case 'Ctrl-Shift-Home':
-      while (this.cursor[L] || this.cursor.parent !== this) {
-        this.cursor.selectLeft();
-      }
-      break;
-
-    case 'Left': this.cursor.moveLeft(); break;
-    case 'Shift-Left': this.cursor.selectLeft(); break;
-    case 'Ctrl-Left': break;
-
-    case 'Right': this.cursor.moveRight(); break;
-    case 'Shift-Right': this.cursor.selectRight(); break;
-    case 'Ctrl-Right': break;
-
-    case 'Up': this.cursor.moveUp(); break;
-    case 'Down': this.cursor.moveDown(); break;
-
-    case 'Shift-Up':
-      if (this.cursor[L]) {
-        while (this.cursor[L]) this.cursor.selectLeft();
-      } else {
-        this.cursor.selectLeft();
-      }
-
-    case 'Shift-Down':
-      if (this.cursor[R]) {
-        while (this.cursor[R]) this.cursor.selectRight();
-      }
-      else {
-        this.cursor.selectRight();
-      }
-
-    case 'Ctrl-Up': break;
-    case 'Ctrl-Down': break;
-
-    case 'Ctrl-Shift-Del':
-    case 'Ctrl-Del':
-      while (this.cursor[R] || this.cursor.selection) {
-        this.cursor.deleteForward();
-      }
-      break;
-
-    case 'Shift-Del':
-    case 'Del':
-      this.cursor.deleteForward();
-      break;
-
-    case 'Meta-A':
-    case 'Ctrl-A':
-      //so not stopPropagation'd at RootMathCommand
-      if (this !== this.cursor.root) return;
-
-      this.cursor.prepareMove().insAtRightEnd(this);
-      while (this.cursor[L]) this.cursor.selectLeft();
-      break;
-
-    default:
-      return false;
-    }
-    e.preventDefault();
-    return false;
-  };
-  _.onText = function(ch) {
-    this.cursor.write(ch);
-    return false;
-  };
-});
-
-var RootMathCommand = P(MathCommand, function(_, _super) {
-  _.init = function(cursor) {
-    _super.init.call(this, '$');
-    this.cursor = cursor;
-  };
-  _.htmlTemplate = '<span class="mathquill-rendered-math">&0</span>';
-  _.createBlocks = function() {
-    this.ends[L] =
-    this.ends[R] =
-      RootMathBlock();
-
-    this.blocks = [ this.ends[L] ];
-
-    this.ends[L].parent = this;
-
-    this.ends[L].cursor = this.cursor;
-    this.ends[L].write = function(cursor, ch, replacedFragment) {
-      if (ch !== '$')
-        MathBlock.prototype.write.call(this, cursor, ch, replacedFragment);
-      else if (this.isEmpty()) {
-        cursor.insRightOf(this.parent).backspace().show();
-        VanillaSymbol('\\$','$').createLeftOf(cursor);
-      }
-      else if (!cursor[R])
-        cursor.insRightOf(this.parent);
-      else if (!cursor[L])
-        cursor.insLeftOf(this.parent);
-      else
-        MathBlock.prototype.write.call(this, cursor, ch, replacedFragment);
+API.StaticMath = function(APIClasses) {
+  return P(APIClasses.AbstractMathQuill, function(_, super_) {
+    this.RootBlock = MathBlock;
+    _.__mathquillify = function() {
+      super_.__mathquillify.call(this, 'mq-math-mode');
+      this.__controller.delegateMouseEvents();
+      this.__controller.staticMathTextareaEvents();
+      return this;
     };
-  };
-  _.latex = function() {
-    return '$' + this.ends[L].latex() + '$';
-  };
-});
-
-var RootTextBlock = P(MathBlock, function(_) {
-  _.renderLatex = function(latex) {
-    var self = this;
-    var cursor = self.cursor;
-    self.jQ.children().slice(1).remove();
-    self.ends[L] = self.ends[R] = 0;
-    delete cursor.selection;
-    cursor.show().insAtRightEnd(self);
-
-    var regex = Parser.regex;
-    var string = Parser.string;
-    var eof = Parser.eof;
-    var all = Parser.all;
-
-    // Parser RootMathCommand
-    var mathMode = string('$').then(latexMathParser)
-      // because TeX is insane, math mode doesn't necessarily
-      // have to end.  So we allow for the case that math mode
-      // continues to the end of the stream.
-      .skip(string('$').or(eof))
-      .map(function(block) {
-        // HACK FIXME: this shouldn't have to have access to cursor
-        var rootMathCommand = RootMathCommand(cursor);
-
-        rootMathCommand.createBlocks();
-        var rootMathBlock = rootMathCommand.ends[L];
-        block.children().adopt(rootMathBlock, 0, 0);
-
-        return rootMathCommand;
-      })
-    ;
-
-    var escapedDollar = string('\\$').result('$');
-    var textChar = escapedDollar.or(regex(/^[^$]/)).map(VanillaSymbol);
-    var latexText = mathMode.or(textChar).many();
-    var commands = latexText.skip(eof).or(all.result(false)).parse(latex);
-
-    if (commands) {
-      for (var i = 0; i < commands.length; i += 1) {
-        commands[i].adopt(self, self.ends[R], 0);
+    _.init = function() {
+      super_.init.apply(this, arguments);
+      this.__controller.root.postOrder(
+        'registerInnerField', this.innerFields = [], APIClasses.MathField);
+    };
+    _.latex = function() {
+      var returned = super_.latex.apply(this, arguments);
+      if (arguments.length > 0) {
+        this.__controller.root.postOrder(
+          'registerInnerField', this.innerFields = [], APIClasses.MathField);
       }
-
-      var html = self.join('html');
-      MathElement.jQize(html).appendTo(self.jQ);
-
-      this.finalizeInsert();
-    }
-  };
-  _.onKey = function(key) {
-    if (key === 'Spacebar' || key === 'Shift-Spacebar') return;
-    RootMathBlock.prototype.onKey.apply(this, arguments);
-  };
-  _.onText = RootMathBlock.prototype.onText;
-  _.write = function(cursor, ch, replacedFragment) {
-    if (replacedFragment) replacedFragment.remove();
-    if (ch === '$')
-      RootMathCommand(cursor).createLeftOf(cursor);
-    else {
-      var html;
-      if (ch === '<') html = '&lt;';
-      else if (ch === '>') html = '&gt;';
-      VanillaSymbol(ch, html).createLeftOf(cursor);
-    }
-  };
-});
-/***************************
- * Commands and Operators.
- **************************/
-
-var CharCmds = {}, LatexCmds = {}; //single character commands, LaTeX commands
-
-var scale, // = function(jQ, x, y) { ... }
-//will use a CSS 2D transform to scale the jQuery-wrapped HTML elements,
-//or the filter matrix transform fallback for IE 5.5-8, or gracefully degrade to
-//increasing the fontSize to match the vertical Y scaling factor.
-
-//ideas from http://github.com/louisremi/jquery.transform.js
-//see also http://msdn.microsoft.com/en-us/library/ms533014(v=vs.85).aspx
-
-  forceIERedraw = noop,
-  div = document.createElement('div'),
-  div_style = div.style,
-  transformPropNames = {
-    transform:1,
-    WebkitTransform:1,
-    MozTransform:1,
-    OTransform:1,
-    msTransform:1
-  },
-  transformPropName;
-
-for (var prop in transformPropNames) {
-  if (prop in div_style) {
-    transformPropName = prop;
-    break;
-  }
-}
-
-if (transformPropName) {
-  scale = function(jQ, x, y) {
-    jQ.css(transformPropName, 'scale('+x+','+y+')');
-  };
-}
-else if ('filter' in div_style) { //IE 6, 7, & 8 fallback, see https://github.com/laughinghan/mathquill/wiki/Transforms
-  forceIERedraw = function(el){ el.className = el.className; };
-  scale = function(jQ, x, y) { //NOTE: assumes y > x
-    x /= (1+(y-1)/2);
-    jQ.css('fontSize', y + 'em');
-    if (!jQ.hasClass('matrixed-container')) {
-      jQ.addClass('matrixed-container')
-      .wrapInner('<span class="matrixed"></span>');
-    }
-    var innerjQ = jQ.children()
-    .css('filter', 'progid:DXImageTransform.Microsoft'
-        + '.Matrix(M11=' + x + ",SizingMethod='auto expand')"
-    );
-    function calculateMarginRight() {
-      jQ.css('marginRight', (innerjQ.width()-1)*(x-1)/x + 'px');
-    }
-    calculateMarginRight();
-    var intervalId = setInterval(calculateMarginRight);
-    $(window).load(function() {
-      clearTimeout(intervalId);
-      calculateMarginRight();
-    });
-  };
-}
-else {
-  scale = function(jQ, x, y) {
-    jQ.css('fontSize', y + 'em');
-  };
-}
-
-var Style = P(MathCommand, function(_, _super) {
-  _.init = function(ctrlSeq, tagName, attrs) {
-    _super.init.call(this, ctrlSeq, '<'+tagName+' '+attrs+'>&0</'+tagName+'>');
-  };
-});
-
-//fonts
-LatexCmds.mathrm = bind(Style, '\\mathrm', 'span', 'class="roman font"');
-LatexCmds.mathit = bind(Style, '\\mathit', 'i', 'class="font"');
-LatexCmds.mathbf = bind(Style, '\\mathbf', 'b', 'class="font"');
-LatexCmds.mathsf = bind(Style, '\\mathsf', 'span', 'class="sans-serif font"');
-LatexCmds.mathtt = bind(Style, '\\mathtt', 'span', 'class="monospace font"');
-//text-decoration
-LatexCmds.underline = bind(Style, '\\underline', 'span', 'class="non-leaf underline"');
-LatexCmds.overline = LatexCmds.bar = bind(Style, '\\overline', 'span', 'class="non-leaf overline"');
-
-var SupSub = P(MathCommand, function(_, _super) {
-  _.init = function(ctrlSeq, tag, text) {
-    _super.init.call(this, ctrlSeq, '<'+tag+' class="non-leaf">&0</'+tag+'>', [ text ]);
-  };
-  _.finalizeTree = function() {
-    //TODO: use inheritance
-    pray('SupSub is only _ and ^',
-      this.ctrlSeq === '^' || this.ctrlSeq === '_'
-    );
-
-    if (this.ctrlSeq === '_') {
-      this.down = this.ends[L];
-      this.ends[L].up = insLeftOfMeUnlessAtEnd;
-    }
-    else {
-      this.up = this.ends[L];
-      this.ends[L].down = insLeftOfMeUnlessAtEnd;
-    }
-    function insLeftOfMeUnlessAtEnd(cursor) {
-      // cursor.insLeftOf(cmd), unless cursor at the end of block, and every
-      // ancestor cmd is at the end of every ancestor block
-      var cmd = this.parent, ancestorCmd = cursor;
-      do {
-        if (ancestorCmd[R]) {
-          cursor.insLeftOf(cmd);
-          return false;
-        }
-        ancestorCmd = ancestorCmd.parent.parent;
-      } while (ancestorCmd !== cmd);
-      cursor.insRightOf(cmd);
-      return false;
-    }
-  };
-  _.latex = function() {
-    var latex = this.ends[L].latex();
-    if (latex.length === 1)
-      return this.ctrlSeq + latex;
-    else
-      return this.ctrlSeq + '{' + (latex || ' ') + '}';
-  };
-  _.redraw = function() {
-    if (this[L])
-      this[L].respace();
-    //SupSub::respace recursively calls respace on all the following SupSubs
-    //so if leftward is a SupSub, no need to call respace on this or following nodes
-    if (!(this[L] instanceof SupSub)) {
-      this.respace();
-      //and if rightward is a SupSub, then this.respace() will have already called
-      //this[R].respace()
-      if (this[R] && !(this[R] instanceof SupSub))
-        this[R].respace();
-    }
-  };
-  _.respace = function() {
-    if (
-      this[L].ctrlSeq === '\\int ' || (
-        this[L] instanceof SupSub && this[L].ctrlSeq != this.ctrlSeq
-        && this[L][L] && this[L][L].ctrlSeq === '\\int '
-      )
-    ) {
-      if (!this.limit) {
-        this.limit = true;
-        this.jQ.addClass('limit');
-      }
-    }
-    else {
-      if (this.limit) {
-        this.limit = false;
-        this.jQ.removeClass('limit');
-      }
-    }
-
-    this.respaced = this[L] instanceof SupSub && this[L].ctrlSeq != this.ctrlSeq && !this[L].respaced;
-    if (this.respaced) {
-      var fontSize = +this.jQ.css('fontSize').slice(0,-2),
-        leftWidth = this[L].jQ.outerWidth(),
-        thisWidth = this.jQ.outerWidth();
-      this.jQ.css({
-        left: (this.limit && this.ctrlSeq === '_' ? -.25 : 0) - leftWidth/fontSize + 'em',
-        marginRight: .1 - min(thisWidth, leftWidth)/fontSize + 'em'
-          //1px extra so it doesn't wrap in retarded browsers (Firefox 2, I think)
-      });
-    }
-    else if (this.limit && this.ctrlSeq === '_') {
-      this.jQ.css({
-        left: '-.25em',
-        marginRight: ''
-      });
-    }
-    else {
-      this.jQ.css({
-        left: '',
-        marginRight: ''
-      });
-    }
-
-    if (this[R] instanceof SupSub)
-      this[R].respace();
-
-    return this;
-  };
-});
-
-LatexCmds.subscript =
-LatexCmds._ = bind(SupSub, '_', 'sub', '_');
-
-LatexCmds.superscript =
-LatexCmds.supscript =
-LatexCmds['^'] = bind(SupSub, '^', 'sup', '**');
-
-var Fraction =
-LatexCmds.frac =
-LatexCmds.dfrac =
-LatexCmds.cfrac =
-LatexCmds.fraction = P(MathCommand, function(_, _super) {
-  _.ctrlSeq = '\\frac';
-  _.htmlTemplate =
-      '<span class="fraction non-leaf">'
-    +   '<span class="numerator">&0</span>'
-    +   '<span class="denominator">&1</span>'
-    +   '<span style="display:inline-block;width:0">&nbsp;</span>'
-    + '</span>'
-  ;
-  _.textTemplate = ['(', '/', ')'];
-  _.finalizeTree = function() {
-    this.up = this.ends[R].up = this.ends[L];
-    this.down = this.ends[L].down = this.ends[R];
-  };
-});
-
-var LiveFraction =
-LatexCmds.over =
-CharCmds['/'] = P(Fraction, function(_, _super) {
-  _.createLeftOf = function(cursor) {
-    if (!this.replacedFragment) {
-      var leftward = cursor[L];
-      while (leftward &&
-        !(
-          leftward instanceof BinaryOperator ||
-          leftward instanceof TextBlock ||
-          leftward instanceof BigSymbol ||
-          /^[,;:]$/.test(leftward.ctrlSeq)
-        ) //lookbehind for operator
-      )
-        leftward = leftward[L];
-
-      if (leftward instanceof BigSymbol && leftward[R] instanceof SupSub) {
-        leftward = leftward[R];
-        if (leftward[R] instanceof SupSub && leftward[R].ctrlSeq != leftward.ctrlSeq)
-          leftward = leftward[R];
-      }
-
-      if (leftward !== cursor[L]) {
-        this.replaces(MathFragment(leftward[R] || cursor.parent.ends[L], cursor[L]));
-        cursor[L] = leftward;
-      }
-    }
-    _super.createLeftOf.call(this, cursor);
-  };
-});
-
-var SquareRoot =
-LatexCmds.sqrt =
-LatexCmds['√'] = P(MathCommand, function(_, _super) {
-  _.ctrlSeq = '\\sqrt';
-  _.htmlTemplate =
-      '<span class="non-leaf">'
-    +   '<span class="scaled sqrt-prefix">&radic;</span>'
-    +   '<span class="non-leaf sqrt-stem">&0</span>'
-    + '</span>'
-  ;
-  _.textTemplate = ['sqrt(', ')'];
-  _.parser = function() {
-    return latexMathParser.optBlock.then(function(optBlock) {
-      return latexMathParser.block.map(function(block) {
-        var nthroot = NthRoot();
-        nthroot.blocks = [ optBlock, block ];
-        optBlock.adopt(nthroot, 0, 0);
-        block.adopt(nthroot, optBlock, 0);
-        return nthroot;
-      });
-    }).or(_super.parser.call(this));
-  };
-  _.redraw = function() {
-    var block = this.ends[R].jQ;
-    scale(block.prev(), 1, block.innerHeight()/+block.css('fontSize').slice(0,-2) - .1);
-  };
-});
-
-var Vec = LatexCmds.vec = P(MathCommand, function(_, _super) {
-  _.ctrlSeq = '\\vec';
-  _.htmlTemplate =
-      '<span class="non-leaf">'
-    +   '<span class="vector-prefix">&rarr;</span>'
-    +   '<span class="vector-stem">&0</span>'
-    + '</span>'
-  ;
-  _.textTemplate = ['vec(', ')'];
-});
-
-var NthRoot =
-LatexCmds.nthroot = P(SquareRoot, function(_, _super) {
-  _.htmlTemplate =
-      '<sup class="nthroot non-leaf">&0</sup>'
-    + '<span class="scaled">'
-    +   '<span class="sqrt-prefix scaled">&radic;</span>'
-    +   '<span class="sqrt-stem non-leaf">&1</span>'
-    + '</span>'
-  ;
-  _.textTemplate = ['sqrt[', '](', ')'];
-  _.latex = function() {
-    return '\\sqrt['+this.ends[L].latex()+']{'+this.ends[R].latex()+'}';
-  };
-});
-
-// Round/Square/Curly/Angle Brackets (aka Parens/Brackets/Braces)
-var Bracket = P(MathCommand, function(_, _super) {
-  _.init = function(open, close, ctrlSeq, end) {
-    _super.init.call(this, '\\left'+ctrlSeq,
-        '<span class="non-leaf">'
-      +   '<span class="scaled paren">'+open+'</span>'
-      +   '<span class="non-leaf">&0</span>'
-      +   '<span class="scaled paren">'+close+'</span>'
-      + '</span>',
-      [open, close]);
-    this.end = '\\right'+end;
-  };
-  _.jQadd = function() {
-    _super.jQadd.apply(this, arguments);
-    var jQ = this.jQ;
-    this.bracketjQs = jQ.children(':first').add(jQ.children(':last'));
-  };
-  _.latex = function() {
-    return this.ctrlSeq + this.ends[L].latex() + this.end;
-  };
-  _.redraw = function() {
-    var blockjQ = this.ends[L].jQ;
-
-    var height = blockjQ.outerHeight()/+blockjQ.css('fontSize').slice(0,-2);
-
-    scale(this.bracketjQs, min(1 + .2*(height - 1), 1.2), 1.05*height);
-  };
-});
-
-LatexCmds.left = P(MathCommand, function(_) {
-  _.parser = function() {
-    var regex = Parser.regex;
-    var string = Parser.string;
-    var succeed = Parser.succeed;
-    var optWhitespace = Parser.optWhitespace;
-
-    return optWhitespace.then(regex(/^(?:[([|]|\\\{)/))
-      .then(function(open) {
-        if (open.charAt(0) === '\\') open = open.slice(1);
-
-        var cmd = CharCmds[open]();
-
-        return latexMathParser
-          .map(function (block) {
-            cmd.blocks = [ block ];
-            block.adopt(cmd, 0, 0);
-          })
-          .then(string('\\right'))
-          .skip(optWhitespace)
-          .then(regex(/^(?:[\])|]|\\\})/))
-          .then(function(close) {
-            if (close.slice(-1) !== cmd.end.slice(-1)) {
-              return Parser.fail('open doesn\'t match close');
-            }
-
-            return succeed(cmd);
-          })
-        ;
-      })
-    ;
-  };
-});
-
-LatexCmds.right = P(MathCommand, function(_) {
-  _.parser = function() {
-    return Parser.fail('unmatched \\right');
-  };
-});
-
-LatexCmds.lbrace =
-CharCmds['{'] = bind(Bracket, '{', '}', '\\{', '\\}');
-LatexCmds.langle =
-LatexCmds.lang = bind(Bracket, '&lang;','&rang;','\\langle ','\\rangle ');
-
-// Closing bracket matching opening bracket above
-var CloseBracket = P(Bracket, function(_, _super) {
-  _.createLeftOf = function(cursor) {
-    // if I'm at the end of my parent who is a matching open-paren,
-    // and I am not replacing a selection fragment, don't create me,
-    // just put cursor after my parent
-    if (!cursor[R] && cursor.parent.parent && cursor.parent.parent.end === this.end && !this.replacedFragment)
-      cursor.insRightOf(cursor.parent.parent);
-    else
-      _super.createLeftOf.call(this, cursor);
-  };
-  _.placeCursor = function(cursor) {
-    this.ends[L].blur();
-    cursor.insRightOf(this);
-  };
-});
-
-LatexCmds.rbrace =
-CharCmds['}'] = bind(CloseBracket, '{','}','\\{','\\}');
-LatexCmds.rangle =
-LatexCmds.rang = bind(CloseBracket, '&lang;','&rang;','\\langle ','\\rangle ');
-
-var parenMixin = function(_, _super) {
-  _.init = function(open, close) {
-    _super.init.call(this, open, close, open, close);
-  };
+      return returned;
+    };
+  });
 };
 
-var Paren = P(Bracket, parenMixin);
+var RootMathBlock = P(MathBlock, RootBlockMixin);
+API.MathField = function(APIClasses) {
+  return P(APIClasses.EditableField, function(_, super_) {
+    this.RootBlock = RootMathBlock;
+    _.__mathquillify = function(opts, interfaceVersion) {
+      this.config(opts);
+      if (interfaceVersion > 1) this.__controller.root.reflow = noop;
+      super_.__mathquillify.call(this, 'mq-editable-field mq-math-mode');
+      delete this.__controller.root.reflow;
+      return this;
+    };
+  });
+};
+/*************************************************
+ * Abstract classes of text blocks
+ ************************************************/
 
-LatexCmds.lparen =
-CharCmds['('] = bind(Paren, '(', ')');
-LatexCmds.lbrack =
-LatexCmds.lbracket =
-CharCmds['['] = bind(Paren, '[', ']');
-
-var CloseParen = P(CloseBracket, parenMixin);
-
-LatexCmds.rparen =
-CharCmds[')'] = bind(CloseParen, '(', ')');
-LatexCmds.rbrack =
-LatexCmds.rbracket =
-CharCmds[']'] = bind(CloseParen, '[', ']');
-
-var Pipes =
-LatexCmds.lpipe =
-LatexCmds.rpipe =
-CharCmds['|'] = P(Paren, function(_, _super) {
-  _.init = function() {
-    _super.init.call(this, '|', '|');
-  };
-
-  _.createLeftOf = CloseBracket.prototype.createLeftOf;
-});
-
-var TextBlock =
-CharCmds.$ =
-LatexCmds.text =
-LatexCmds.textnormal =
-LatexCmds.textrm =
-LatexCmds.textup =
-LatexCmds.textmd = P(MathCommand, function(_, _super) {
+/**
+ * Blocks of plain text, with one or two TextPiece's as children.
+ * Represents flat strings of typically serif-font Roman characters, as
+ * opposed to hierchical, nested, tree-structured math.
+ * Wraps a single HTMLSpanElement.
+ */
+var TextBlock = P(Node, function(_, super_) {
   _.ctrlSeq = '\\text';
-  _.htmlTemplate = '<span class="text">&0</span>';
+
   _.replaces = function(replacedText) {
-    if (replacedText instanceof MathFragment)
+    if (replacedText instanceof Fragment)
       this.replacedText = replacedText.remove().jQ.text();
     else if (typeof replacedText === 'string')
       this.replacedText = replacedText;
   };
-  _.textTemplate = ['"', '"'];
+
+  _.jQadd = function(jQ) {
+    super_.jQadd.call(this, jQ);
+    if (this.ends[L]) this.ends[L].jQadd(this.jQ[0].firstChild);
+  };
+
+  _.createLeftOf = function(cursor) {
+    var textBlock = this;
+    super_.createLeftOf.call(this, cursor);
+
+    if (textBlock[R].siblingCreated) textBlock[R].siblingCreated(cursor.options, L);
+    if (textBlock[L].siblingCreated) textBlock[L].siblingCreated(cursor.options, R);
+    textBlock.bubble('reflow');
+
+    cursor.insAtRightEnd(textBlock);
+
+    if (textBlock.replacedText)
+      for (var i = 0; i < textBlock.replacedText.length; i += 1)
+        textBlock.write(cursor, textBlock.replacedText.charAt(i));
+  };
+
   _.parser = function() {
-    var self = this;
+    var textBlock = this;
 
     // TODO: correctly parse text mode
     var string = Parser.string;
@@ -2154,146 +2842,247 @@ LatexCmds.textmd = P(MathCommand, function(_, _super) {
     return optWhitespace
       .then(string('{')).then(regex(/^[^}]*/)).skip(string('}'))
       .map(function(text) {
-        self.createBlocks();
-        var block = self.ends[L];
-        for (var i = 0; i < text.length; i += 1) {
-          var ch = VanillaSymbol(text.charAt(i));
-          ch.adopt(block, block.ends[R], 0);
-        }
-        return self;
+        // TODO: is this the correct behavior when parsing
+        // the latex \text{} ?  This violates the requirement that
+        // the text contents are always nonempty.  Should we just
+        // disown the parent node instead?
+        TextPiece(text).adopt(textBlock, 0, 0);
+        return textBlock;
       })
     ;
   };
-  _.createBlocks = function() {
-    //FIXME: another possible Law of Demeter violation, but this seems much cleaner, like it was supposed to be done this way
-    this.ends[L] =
-    this.ends[R] =
-      InnerTextBlock();
 
-    this.blocks = [ this.ends[L] ];
+  _.textContents = function() {
+    return this.foldChildren('', function(text, child) {
+      return text + child.text;
+    });
+  };
+  _.text = function() { return '"' + this.textContents() + '"'; };
+  _.latex = function() { return '\\text{' + this.textContents() + '}'; };
+  _.html = function() {
+    return (
+        '<span class="mq-text-mode" mathquill-command-id='+this.id+'>'
+      +   this.textContents()
+      + '</span>'
+    );
+  };
 
-    this.ends[L].parent = this;
-  };
-  _.finalizeInsert = function() {
-    //FIXME HACK blur removes the TextBlock
-    this.ends[L].blur = function() { delete this.blur; return this; };
-    _super.finalizeInsert.call(this);
-  };
-  _.createLeftOf = function(cursor) {
-    _super.createLeftOf.call(this, this.cursor = cursor);
+  // editability methods: called by the cursor for editing, cursor movements,
+  // and selection of the MathQuill tree, these all take in a direction and
+  // the cursor
+  _.moveTowards = function(dir, cursor) { cursor.insAtDirEnd(-dir, this); };
+  _.moveOutOf = function(dir, cursor) { cursor.insDirOf(dir, this); };
+  _.unselectInto = _.moveTowards;
 
-    if (this.replacedText)
-      for (var i = 0; i < this.replacedText.length; i += 1)
-        this.ends[L].write(cursor, this.replacedText.charAt(i));
-  };
-});
+  // TODO: make these methods part of a shared mixin or something.
+  _.selectTowards = MathCommand.prototype.selectTowards;
+  _.deleteTowards = MathCommand.prototype.deleteTowards;
 
-var InnerTextBlock = P(MathBlock, function(_, _super) {
-  _.onKey = function(key, e) {
-    if (key === 'Spacebar' || key === 'Shift-Spacebar') return false;
+  _.selectOutOf = function(dir, cursor) {
+    cursor.insDirOf(dir, this);
   };
-  // backspace and delete at ends of block don't unwrap
   _.deleteOutOf = function(dir, cursor) {
-    if (this.isEmpty()) cursor.insRightOf(this.parent);
+    // backspace and delete at ends of block don't unwrap
+    if (this.isEmpty()) cursor.insRightOf(this);
   };
-  _.write = function(cursor, ch, replacedFragment) {
-    if (replacedFragment) replacedFragment.remove();
+  _.write = function(cursor, ch) {
+    cursor.show().deleteSelection();
 
     if (ch !== '$') {
-      var html;
-      if (ch === '<') html = '&lt;';
-      else if (ch === '>') html = '&gt;';
-      VanillaSymbol(ch, html).createLeftOf(cursor);
+      if (!cursor[L]) TextPiece(ch).createLeftOf(cursor);
+      else cursor[L].appendText(ch);
     }
     else if (this.isEmpty()) {
-      cursor.insRightOf(this.parent).backspace();
+      cursor.insRightOf(this);
       VanillaSymbol('\\$','$').createLeftOf(cursor);
     }
-    else if (!cursor[R])
-      cursor.insRightOf(this.parent);
-    else if (!cursor[L])
-      cursor.insLeftOf(this.parent);
-    else { //split apart
-      var rightward = TextBlock();
-      rightward.replaces(MathFragment(cursor[R], this.ends[R]));
+    else if (!cursor[R]) cursor.insRightOf(this);
+    else if (!cursor[L]) cursor.insLeftOf(this);
+    else { // split apart
+      var leftBlock = TextBlock();
+      var leftPc = this.ends[L];
+      leftPc.disown();
+      leftPc.adopt(leftBlock, 0, 0);
 
-      cursor.insRightOf(this.parent);
-
-      // FIXME HACK: pretend no prev so they don't get merged when
-      // .createLeftOf() calls blur on the InnerTextBlock
-      rightward.adopt = function() {
-        delete this.adopt;
-        this.adopt.apply(this, arguments);
-        this[L] = 0;
-      };
-      rightward.createLeftOf(cursor);
-      rightward[L] = this.parent;
-
-      cursor.insLeftOf(rightward);
+      cursor.insLeftOf(this);
+      super_.createLeftOf.call(leftBlock, cursor);
     }
-    return false;
   };
-  _.blur = function() {
-    this.jQ.removeClass('hasCursor');
-    if (this.isEmpty()) {
-      var textblock = this.parent, cursor = textblock.cursor;
-      if (cursor.parent === this)
-        this.jQ.addClass('empty');
-      else {
-        cursor.hide();
-        textblock.remove();
-        if (cursor[R] === textblock)
-          cursor[R] = textblock[R];
-        else if (cursor[L] === textblock)
-          cursor[L] = textblock[L];
 
-        cursor.show().parent.bubble('redraw');
+  _.seek = function(pageX, cursor) {
+    cursor.hide();
+    var textPc = fuseChildren(this);
+
+    // insert cursor at approx position in DOMTextNode
+    var avgChWidth = this.jQ.width()/this.text.length;
+    var approxPosition = Math.round((pageX - this.jQ.offset().left)/avgChWidth);
+    if (approxPosition <= 0) cursor.insAtLeftEnd(this);
+    else if (approxPosition >= textPc.text.length) cursor.insAtRightEnd(this);
+    else cursor.insLeftOf(textPc.splitRight(approxPosition));
+
+    // move towards mousedown (pageX)
+    var displ = pageX - cursor.show().offset().left; // displacement
+    var dir = displ && displ < 0 ? L : R;
+    var prevDispl = dir;
+    // displ * prevDispl > 0 iff displacement direction === previous direction
+    while (cursor[dir] && displ * prevDispl > 0) {
+      cursor[dir].moveTowards(dir, cursor);
+      prevDispl = displ;
+      displ = pageX - cursor.offset().left;
+    }
+    if (dir*displ < -dir*prevDispl) cursor[-dir].moveTowards(-dir, cursor);
+
+    if (!cursor.anticursor) {
+      // about to start mouse-selecting, the anticursor is gonna get put here
+      this.anticursorPosition = cursor[L] && cursor[L].text.length;
+      // ^ get it? 'cos if there's no cursor[L], it's 0... I'm a terrible person.
+    }
+    else if (cursor.anticursor.parent === this) {
+      // mouse-selecting within this TextBlock, re-insert the anticursor
+      var cursorPosition = cursor[L] && cursor[L].text.length;;
+      if (this.anticursorPosition === cursorPosition) {
+        cursor.anticursor = Point.copy(cursor);
+      }
+      else {
+        if (this.anticursorPosition < cursorPosition) {
+          var newTextPc = cursor[L].splitRight(this.anticursorPosition);
+          cursor[L] = newTextPc;
+        }
+        else {
+          var newTextPc = cursor[R].splitRight(this.anticursorPosition - cursorPosition);
+        }
+        cursor.anticursor = Point(this, newTextPc[L], newTextPc);
       }
     }
-    return this;
   };
-  _.focus = function() {
-    _super.focus.call(this);
 
-    var textblock = this.parent;
-    if (textblock[R].ctrlSeq === textblock.ctrlSeq) { //TODO: seems like there should be a better way to move MathElements around
-      var innerblock = this,
-        cursor = textblock.cursor,
-        rightward = textblock[R].ends[L];
+  _.blur = function() {
+    MathBlock.prototype.blur.call(this);
+    fuseChildren(this);
+  };
 
-      rightward.eachChild(function(child){
-        child.parent = innerblock;
-        child.jQ.appendTo(innerblock.jQ);
-      });
+  function fuseChildren(self) {
+    self.jQ[0].normalize();
 
-      if (this.ends[R])
-        this.ends[R][R] = rightward.ends[L];
-      else
-        this.ends[L] = rightward.ends[L];
+    var textPcDom = self.jQ[0].firstChild;
+    var textPc = TextPiece(textPcDom.data);
+    textPc.jQadd(textPcDom);
 
-      rightward.ends[L][L] = this.ends[R];
-      this.ends[R] = rightward.ends[R];
+    self.children().disown();
+    return textPc.adopt(self, 0, 0);
+  }
 
-      rightward.parent.remove();
+  _.focus = MathBlock.prototype.focus;
+});
 
-      if (cursor[L])
-        cursor.insRightOf(cursor[L]);
-      else
-        cursor.insAtLeftEnd(this);
+/**
+ * Piece of plain text, with a TextBlock as a parent and no children.
+ * Wraps a single DOMTextNode.
+ * For convenience, has a .text property that's just a JavaScript string
+ * mirroring the text contents of the DOMTextNode.
+ * Text contents must always be nonempty.
+ */
+var TextPiece = P(Node, function(_, super_) {
+  _.init = function(text) {
+    super_.init.call(this);
+    this.text = text;
+  };
+  _.jQadd = function(dom) { this.dom = dom; this.jQ = $(dom); };
+  _.jQize = function() {
+    return this.jQadd(document.createTextNode(this.text));
+  };
+  _.appendText = function(text) {
+    this.text += text;
+    this.dom.appendData(text);
+  };
+  _.prependText = function(text) {
+    this.text = text + this.text;
+    this.dom.insertData(0, text);
+  };
+  _.insTextAtDirEnd = function(text, dir) {
+    prayDirection(dir);
+    if (dir === R) this.appendText(text);
+    else this.prependText(text);
+  };
+  _.splitRight = function(i) {
+    var newPc = TextPiece(this.text.slice(i)).adopt(this.parent, this, this[R]);
+    newPc.jQadd(this.dom.splitText(i));
+    this.text = this.text.slice(0, i);
+    return newPc;
+  };
 
-      cursor.parent.bubble('redraw');
+  function endChar(dir, text) {
+    return text.charAt(dir === L ? 0 : -1 + text.length);
+  }
+
+  _.moveTowards = function(dir, cursor) {
+    prayDirection(dir);
+
+    var ch = endChar(-dir, this.text)
+
+    var from = this[-dir];
+    if (from) from.insTextAtDirEnd(ch, dir);
+    else TextPiece(ch).createDir(-dir, cursor);
+
+    return this.deleteTowards(dir, cursor);
+  };
+
+  _.latex = function() { return this.text; };
+
+  _.deleteTowards = function(dir, cursor) {
+    if (this.text.length > 1) {
+      if (dir === R) {
+        this.dom.deleteData(0, 1);
+        this.text = this.text.slice(1);
+      }
+      else {
+        // note that the order of these 2 lines is annoyingly important
+        // (the second line mutates this.text.length)
+        this.dom.deleteData(-1 + this.text.length, 1);
+        this.text = this.text.slice(0, -1);
+      }
     }
-    else if (textblock[L].ctrlSeq === textblock.ctrlSeq) {
-      var cursor = textblock.cursor;
-      if (cursor[L])
-        textblock[L].ends[L].focus();
-      else
-        cursor.insAtRightEnd(textblock[L].ends[L]);
+    else {
+      this.remove();
+      this.jQ.remove();
+      cursor[dir] = this[dir];
     }
-    return this;
+  };
+
+  _.selectTowards = function(dir, cursor) {
+    prayDirection(dir);
+    var anticursor = cursor.anticursor;
+
+    var ch = endChar(-dir, this.text)
+
+    if (anticursor[dir] === this) {
+      var newPc = TextPiece(ch).createDir(dir, cursor);
+      anticursor[dir] = newPc;
+      cursor.insDirOf(dir, newPc);
+    }
+    else {
+      var from = this[-dir];
+      if (from) from.insTextAtDirEnd(ch, dir);
+      else {
+        var newPc = TextPiece(ch).createDir(-dir, cursor);
+        newPc.jQ.insDirOf(-dir, cursor.selection.jQ);
+      }
+
+      if (this.text.length === 1 && anticursor[-dir] === this) {
+        anticursor[-dir] = this[-dir]; // `this` will be removed in deleteTowards
+      }
+    }
+
+    return this.deleteTowards(dir, cursor);
   };
 });
 
+CharCmds.$ =
+LatexCmds.text =
+LatexCmds.textnormal =
+LatexCmds.textrm =
+LatexCmds.textup =
+LatexCmds.textmd = TextBlock;
 
 function makeTextBlock(latex, tagName, attrs) {
   return P(TextBlock, {
@@ -2304,55 +3093,139 @@ function makeTextBlock(latex, tagName, attrs) {
 
 LatexCmds.em = LatexCmds.italic = LatexCmds.italics =
 LatexCmds.emph = LatexCmds.textit = LatexCmds.textsl =
-  makeTextBlock('\\textit', 'i', 'class="text"');
+  makeTextBlock('\\textit', 'i', 'class="mq-text-mode"');
 LatexCmds.strong = LatexCmds.bold = LatexCmds.textbf =
-  makeTextBlock('\\textbf', 'b', 'class="text"');
+  makeTextBlock('\\textbf', 'b', 'class="mq-text-mode"');
 LatexCmds.sf = LatexCmds.textsf =
-  makeTextBlock('\\textsf', 'span', 'class="sans-serif text"');
+  makeTextBlock('\\textsf', 'span', 'class="mq-sans-serif mq-text-mode"');
 LatexCmds.tt = LatexCmds.texttt =
-  makeTextBlock('\\texttt', 'span', 'class="monospace text"');
+  makeTextBlock('\\texttt', 'span', 'class="mq-monospace mq-text-mode"');
 LatexCmds.textsc =
-  makeTextBlock('\\textsc', 'span', 'style="font-variant:small-caps" class="text"');
+  makeTextBlock('\\textsc', 'span', 'style="font-variant:small-caps" class="mq-text-mode"');
 LatexCmds.uppercase =
-  makeTextBlock('\\uppercase', 'span', 'style="text-transform:uppercase" class="text"');
+  makeTextBlock('\\uppercase', 'span', 'style="text-transform:uppercase" class="mq-text-mode"');
 LatexCmds.lowercase =
-  makeTextBlock('\\lowercase', 'span', 'style="text-transform:lowercase" class="text"');
+  makeTextBlock('\\lowercase', 'span', 'style="text-transform:lowercase" class="mq-text-mode"');
 
-// input box to type a variety of LaTeX commands beginning with a backslash
+
+var RootMathCommand = P(MathCommand, function(_, super_) {
+  _.init = function(cursor) {
+    super_.init.call(this, '$');
+    this.cursor = cursor;
+  };
+  _.htmlTemplate = '<span class="mq-math-mode">&0</span>';
+  _.createBlocks = function() {
+    super_.createBlocks.call(this);
+
+    this.ends[L].cursor = this.cursor;
+    this.ends[L].write = function(cursor, ch) {
+      if (ch !== '$')
+        MathBlock.prototype.write.call(this, cursor, ch);
+      else if (this.isEmpty()) {
+        cursor.insRightOf(this.parent);
+        this.parent.deleteTowards(dir, cursor);
+        VanillaSymbol('\\$','$').createLeftOf(cursor.show());
+      }
+      else if (!cursor[R])
+        cursor.insRightOf(this.parent);
+      else if (!cursor[L])
+        cursor.insLeftOf(this.parent);
+      else
+        MathBlock.prototype.write.call(this, cursor, ch);
+    };
+  };
+  _.latex = function() {
+    return '$' + this.ends[L].latex() + '$';
+  };
+});
+
+var RootTextBlock = P(RootMathBlock, function(_, super_) {
+  _.keystroke = function(key) {
+    if (key === 'Spacebar' || key === 'Shift-Spacebar') return;
+    return super_.keystroke.apply(this, arguments);
+  };
+  _.write = function(cursor, ch) {
+    cursor.show().deleteSelection();
+    if (ch === '$')
+      RootMathCommand(cursor).createLeftOf(cursor);
+    else {
+      var html;
+      if (ch === '<') html = '&lt;';
+      else if (ch === '>') html = '&gt;';
+      VanillaSymbol(ch, html).createLeftOf(cursor);
+    }
+  };
+});
+API.TextField = function(APIClasses) {
+  return P(APIClasses.EditableField, function(_, super_) {
+    this.RootBlock = RootTextBlock;
+    _.__mathquillify = function() {
+      return super_.__mathquillify.call(this, 'mq-editable-field mq-text-mode');
+    };
+    _.latex = function(latex) {
+      if (arguments.length > 0) {
+        this.__controller.renderLatexText(latex);
+        if (this.__controller.blurred) this.__controller.cursor.hide().parent.blur();
+        return this;
+      }
+      return this.__controller.exportLatex();
+    };
+  });
+};
+/****************************************
+ * Input box to type backslash commands
+ ***************************************/
+
 var LatexCommandInput =
-CharCmds['\\'] = P(MathCommand, function(_, _super) {
+CharCmds['\\'] = P(MathCommand, function(_, super_) {
   _.ctrlSeq = '\\';
   _.replaces = function(replacedFragment) {
     this._replacedFragment = replacedFragment.disown();
     this.isEmpty = function() { return false; };
   };
-  _.htmlTemplate = '<span class="latex-command-input non-leaf">\\<span>&0</span></span>';
+  _.htmlTemplate = '<span class="mq-latex-command-input mq-non-leaf">\\<span>&0</span></span>';
   _.textTemplate = ['\\'];
   _.createBlocks = function() {
-    _super.createBlocks.call(this);
+    super_.createBlocks.call(this);
     this.ends[L].focus = function() {
-      this.parent.jQ.addClass('hasCursor');
+      this.parent.jQ.addClass('mq-hasCursor');
       if (this.isEmpty())
-        this.parent.jQ.removeClass('empty');
+        this.parent.jQ.removeClass('mq-empty');
 
       return this;
     };
     this.ends[L].blur = function() {
-      this.parent.jQ.removeClass('hasCursor');
+      this.parent.jQ.removeClass('mq-hasCursor');
       if (this.isEmpty())
-        this.parent.jQ.addClass('empty');
+        this.parent.jQ.addClass('mq-empty');
 
       return this;
     };
+    this.ends[L].write = function(cursor, ch) {
+      cursor.show().deleteSelection();
+
+      if (ch.match(/[a-z]/i)) VanillaSymbol(ch).createLeftOf(cursor);
+      else {
+        this.parent.renderCommand(cursor);
+        if (ch !== '\\' || !this.isEmpty()) this.parent.parent.write(cursor, ch);
+      }
+    };
+    this.ends[L].keystroke = function(key, e, ctrlr) {
+      if (key === 'Tab' || key === 'Enter' || key === 'Spacebar') {
+        this.parent.renderCommand(ctrlr.cursor);
+        e.preventDefault();
+        return;
+      }
+      return super_.keystroke.apply(this, arguments);
+    };
   };
   _.createLeftOf = function(cursor) {
-    _super.createLeftOf.call(this, cursor);
+    super_.createLeftOf.call(this, cursor);
 
-    this.cursor = cursor.insAtRightEnd(this.ends[L]);
     if (this._replacedFragment) {
       var el = this.jQ[0];
       this.jQ =
-        this._replacedFragment.jQ.addClass('blur').bind(
+        this._replacedFragment.jQ.addClass('mq-blur').bind(
           'mousedown mousemove', //FIXME: is monkey-patching the mousedown and mousemove handlers the right way to do this?
           function(e) {
             $(e.target = el).trigger(e);
@@ -2360,454 +3233,51 @@ CharCmds['\\'] = P(MathCommand, function(_, _super) {
           }
         ).insertBefore(this.jQ).add(this.jQ);
     }
-
-    this.ends[L].write = function(cursor, ch, replacedFragment) {
-      if (replacedFragment) replacedFragment.remove();
-
-      if (ch.match(/[a-z]/i)) VanillaSymbol(ch).createLeftOf(cursor);
-      else {
-        this.parent.renderCommand();
-        if (ch !== '\\' || !this.isEmpty()) this.parent.parent.write(cursor, ch);
-      }
-    };
   };
   _.latex = function() {
     return '\\' + this.ends[L].latex() + ' ';
   };
-  _.onKey = function(key, e) {
-    if (key === 'Tab' || key === 'Enter' || key === 'Spacebar') {
-      this.renderCommand();
-      e.preventDefault();
-      return false;
-    }
-  };
-  _.renderCommand = function() {
+  _.renderCommand = function(cursor) {
     this.jQ = this.jQ.last();
     this.remove();
     if (this[R]) {
-      this.cursor.insLeftOf(this[R]);
+      cursor.insLeftOf(this[R]);
     } else {
-      this.cursor.insAtRightEnd(this.parent);
+      cursor.insAtRightEnd(this.parent);
     }
 
-    var latex = this.ends[L].latex(), cmd;
-    if (!latex) latex = 'backslash';
-    this.cursor.insertCmd(latex, this._replacedFragment);
-  };
-});
-
-var Binomial =
-LatexCmds.binom =
-LatexCmds.binomial = P(MathCommand, function(_, _super) {
-  _.ctrlSeq = '\\binom';
-  _.htmlTemplate =
-      '<span class="paren scaled">(</span>'
-    + '<span class="non-leaf">'
-    +   '<span class="array non-leaf">'
-    +     '<span>&0</span>'
-    +     '<span>&1</span>'
-    +   '</span>'
-    + '</span>'
-    + '<span class="paren scaled">)</span>'
-  ;
-  _.textTemplate = ['choose(',',',')'];
-  _.redraw = function() {
-    var blockjQ = this.jQ.eq(1);
-
-    var height = blockjQ.outerHeight()/+blockjQ.css('fontSize').slice(0,-2);
-
-    var parens = this.jQ.filter('.paren');
-    scale(parens, min(1 + .2*(height - 1), 1.2), 1.05*height);
-  };
-});
-
-var Choose =
-LatexCmds.choose = P(Binomial, function(_) {
-  _.createLeftOf = LiveFraction.prototype.createLeftOf;
-});
-
-var Vector =
-LatexCmds.vector = P(MathCommand, function(_, _super) {
-  _.ctrlSeq = '\\vector';
-  _.htmlTemplate = '<span class="array"><span>&0</span></span>';
-  _.latex = function() {
-    return '\\begin{matrix}' + this.foldChildren([], function(latex, child) {
-      latex.push(child.latex());
-      return latex;
-    }).join('\\\\') + '\\end{matrix}';
-  };
-  _.text = function() {
-    return '[' + this.foldChildren([], function(text, child) {
-      text.push(child.text());
-      return text;
-    }).join() + ']';
-  };
-  _.createLeftOf = function(cursor) {
-    _super.createLeftOf.call(this, this.cursor = cursor);
-  };
-  _.onKey = function(key, e) {
-    var currentBlock = this.cursor.parent;
-
-    if (currentBlock.parent === this) {
-      if (key === 'Enter') { //enter
-        var newBlock = MathBlock();
-        newBlock.parent = this;
-        newBlock.jQ = $('<span></span>')
-          .attr(mqBlockId, newBlock.id)
-          .insertAfter(currentBlock.jQ);
-        if (currentBlock[R])
-          currentBlock[R][L] = newBlock;
-        else
-          this.ends[R] = newBlock;
-
-        newBlock[R] = currentBlock[R];
-        currentBlock[R] = newBlock;
-        newBlock[L] = currentBlock;
-        this.bubble('redraw').cursor.insAtRightEnd(newBlock);
-
-        e.preventDefault();
-        return false;
-      }
-      else if (key === 'Tab' && !currentBlock[R]) {
-        if (currentBlock.isEmpty()) {
-          if (currentBlock[L]) {
-            this.cursor.insRightOf(this);
-            delete currentBlock[L][R];
-            this.ends[R] = currentBlock[L];
-            currentBlock.jQ.remove();
-            this.bubble('redraw');
-
-            e.preventDefault();
-            return false;
-          }
-          else
-            return;
-        }
-
-        var newBlock = MathBlock();
-        newBlock.parent = this;
-        newBlock.jQ = $('<span></span>').attr(mqBlockId, newBlock.id).appendTo(this.jQ);
-        this.ends[R] = newBlock;
-        currentBlock[R] = newBlock;
-        newBlock[L] = currentBlock;
-        this.bubble('redraw').cursor.insAtRightEnd(newBlock);
-
-        e.preventDefault();
-        return false;
-      }
-      else if (e.which === 8) { //backspace
-        if (currentBlock.isEmpty()) {
-          if (currentBlock[L]) {
-            this.cursor.insAtRightEnd(currentBlock[L])
-            currentBlock[L][R] = currentBlock[R];
-          }
-          else {
-            this.cursor.insLeftOf(this);
-            this.ends[L] = currentBlock[R];
-          }
-
-          if (currentBlock[R])
-            currentBlock[R][L] = currentBlock[L];
-          else
-            this.ends[R] = currentBlock[L];
-
-          currentBlock.jQ.remove();
-          if (this.isEmpty())
-            this.cursor.deleteForward();
-          else
-            this.bubble('redraw');
-
-          e.preventDefault();
-          return false;
-        }
-        else if (!this.cursor[L]) {
-          e.preventDefault();
-          return false;
-        }
-      }
-    }
-  };
-});
-
-LatexCmds.editable = P(RootMathCommand, function(_, _super) {
-  _.init = function() {
-    MathCommand.prototype.init.call(this, '\\editable');
-  };
-
-  _.jQadd = function() {
-    var self = this;
-    // FIXME: this entire method is a giant hack to get around
-    // having to call createBlocks, and createRoot expecting to
-    // render the contents' LaTeX. Both need to be refactored.
-    _super.jQadd.apply(self, arguments);
-    var block = self.ends[L].disown();
-    var blockjQ = self.jQ.children().detach();
-
-    self.ends[L] =
-    self.ends[R] =
-      RootMathBlock();
-
-    self.blocks = [ self.ends[L] ];
-
-    self.ends[L].parent = self;
-
-    createRoot(self.jQ, self.ends[L], false, true);
-    self.cursor = self.ends[L].cursor;
-
-    block.children().adopt(self.ends[L], 0, 0);
-    blockjQ.appendTo(self.ends[L].jQ);
-
-    self.ends[L].cursor.insAtRightEnd(self.ends[L]);
-  };
-
-  _.latex = function(){ return this.ends[L].latex(); };
-  _.text = function(){ return this.ends[L].text(); };
-});
-/**********************************
- * Symbols and Special Characters
- *********************************/
-
-LatexCmds.f = bind(Symbol, 'f', '<var class="florin">&fnof;</var><span style="display:inline-block;width:0">&nbsp;</span>');
-
-var Variable = P(Symbol, function(_, _super) {
-  _.init = function(ch, html) {
-    _super.init.call(this, ch, '<var>'+(html || ch)+'</var>');
-  };
-  _.text = function() {
-    var text = this.ctrlSeq;
-    if (this[L] && !(this[L] instanceof Variable)
-        && !(this[L] instanceof BinaryOperator))
-      text = '*' + text;
-    if (this[R] && !(this[R] instanceof BinaryOperator)
-        && !(this[R].ctrlSeq === '^'))
-      text += '*';
-    return text;
-  };
-});
-
-var VanillaSymbol = P(Symbol, function(_, _super) {
-  _.init = function(ch, html) {
-    _super.init.call(this, ch, '<span>'+(html || ch)+'</span>');
-  };
-});
-
-CharCmds[' '] = bind(VanillaSymbol, '\\:', ' ');
-
-LatexCmds.prime = CharCmds["'"] = bind(VanillaSymbol, "'", '&prime;');
-
-// does not use Symbola font
-var NonSymbolaSymbol = P(Symbol, function(_, _super) {
-  _.init = function(ch, html) {
-    _super.init.call(this, ch, '<span class="nonSymbola">'+(html || ch)+'</span>');
-  };
-});
-
-LatexCmds['@'] = NonSymbolaSymbol;
-LatexCmds['&'] = bind(NonSymbolaSymbol, '\\&', '&amp;');
-LatexCmds['%'] = bind(NonSymbolaSymbol, '\\%', '%');
-
-//the following are all Greek to me, but this helped a lot: http://www.ams.org/STIX/ion/stixsig03.html
-
-//lowercase Greek letter variables
-LatexCmds.alpha =
-LatexCmds.beta =
-LatexCmds.gamma =
-LatexCmds.delta =
-LatexCmds.zeta =
-LatexCmds.eta =
-LatexCmds.theta =
-LatexCmds.iota =
-LatexCmds.kappa =
-LatexCmds.mu =
-LatexCmds.nu =
-LatexCmds.xi =
-LatexCmds.rho =
-LatexCmds.sigma =
-LatexCmds.tau =
-LatexCmds.chi =
-LatexCmds.psi =
-LatexCmds.omega = P(Variable, function(_, _super) {
-  _.init = function(latex) {
-    _super.init.call(this,'\\'+latex+' ','&'+latex+';');
-  };
-});
-
-//why can't anybody FUCKING agree on these
-LatexCmds.phi = //W3C or Unicode?
-  bind(Variable,'\\phi ','&#981;');
-
-LatexCmds.phiv = //Elsevier and 9573-13
-LatexCmds.varphi = //AMS and LaTeX
-  bind(Variable,'\\varphi ','&phi;');
-
-LatexCmds.epsilon = //W3C or Unicode?
-  bind(Variable,'\\epsilon ','&#1013;');
-
-LatexCmds.epsiv = //Elsevier and 9573-13
-LatexCmds.varepsilon = //AMS and LaTeX
-  bind(Variable,'\\varepsilon ','&epsilon;');
-
-LatexCmds.piv = //W3C/Unicode and Elsevier and 9573-13
-LatexCmds.varpi = //AMS and LaTeX
-  bind(Variable,'\\varpi ','&piv;');
-
-LatexCmds.sigmaf = //W3C/Unicode
-LatexCmds.sigmav = //Elsevier
-LatexCmds.varsigma = //LaTeX
-  bind(Variable,'\\varsigma ','&sigmaf;');
-
-LatexCmds.thetav = //Elsevier and 9573-13
-LatexCmds.vartheta = //AMS and LaTeX
-LatexCmds.thetasym = //W3C/Unicode
-  bind(Variable,'\\vartheta ','&thetasym;');
-
-LatexCmds.upsilon = //AMS and LaTeX and W3C/Unicode
-LatexCmds.upsi = //Elsevier and 9573-13
-  bind(Variable,'\\upsilon ','&upsilon;');
-
-//these aren't even mentioned in the HTML character entity references
-LatexCmds.gammad = //Elsevier
-LatexCmds.Gammad = //9573-13 -- WTF, right? I dunno if this was a typo in the reference (see above)
-LatexCmds.digamma = //LaTeX
-  bind(Variable,'\\digamma ','&#989;');
-
-LatexCmds.kappav = //Elsevier
-LatexCmds.varkappa = //AMS and LaTeX
-  bind(Variable,'\\varkappa ','&#1008;');
-
-LatexCmds.rhov = //Elsevier and 9573-13
-LatexCmds.varrho = //AMS and LaTeX
-  bind(Variable,'\\varrho ','&#1009;');
-
-//Greek constants, look best in un-italicised Times New Roman
-LatexCmds.pi = LatexCmds['π'] = bind(NonSymbolaSymbol,'\\pi ','&pi;');
-LatexCmds.lambda = bind(NonSymbolaSymbol,'\\lambda ','&lambda;');
-
-//uppercase greek letters
-
-LatexCmds.Upsilon = //LaTeX
-LatexCmds.Upsi = //Elsevier and 9573-13
-LatexCmds.upsih = //W3C/Unicode "upsilon with hook"
-LatexCmds.Upsih = //'cos it makes sense to me
-  bind(Symbol,'\\Upsilon ','<var style="font-family: serif">&upsih;</var>'); //Symbola's 'upsilon with a hook' is a capital Y without hooks :(
-
-//other symbols with the same LaTeX command and HTML character entity reference
-LatexCmds.Gamma =
-LatexCmds.Delta =
-LatexCmds.Theta =
-LatexCmds.Lambda =
-LatexCmds.Xi =
-LatexCmds.Pi =
-LatexCmds.Sigma =
-LatexCmds.Phi =
-LatexCmds.Psi =
-LatexCmds.Omega =
-LatexCmds.forall = P(VanillaSymbol, function(_, _super) {
-  _.init = function(latex) {
-    _super.init.call(this,'\\'+latex+' ','&'+latex+';');
-  };
-});
-
-// symbols that aren't a single MathCommand, but are instead a whole
-// Fragment. Creates the Fragment from a LaTeX string
-var LatexFragment = P(MathCommand, function(_) {
-  _.init = function(latex) { this.latex = latex; };
-  _.createLeftOf = function(cursor) { cursor.writeLatex(this.latex); };
-  _.parser = function() {
-    var frag = latexMathParser.parse(this.latex).children();
-    return Parser.succeed(frag);
-  };
-});
-
-// for what seems to me like [stupid reasons][1], Unicode provides
-// subscripted and superscripted versions of all ten Arabic numerals,
-// as well as [so-called "vulgar fractions"][2].
-// Nobody really cares about most of them, but some of them actually
-// predate Unicode, dating back to [ISO-8859-1][3], apparently also
-// known as "Latin-1", which among other things [Windows-1252][4]
-// largely coincides with, so Microsoft Word sometimes inserts them
-// and they get copy-pasted into MathQuill.
-//
-// (Irrelevant but funny story: Windows-1252 is actually a strict
-// superset of the "closely related but distinct"[3] "ISO 8859-1" --
-// see the lack of a dash after "ISO"? Completely different character
-// set, like elephants vs elephant seals, or "Zombies" vs "Zombie
-// Redneck Torture Family". What kind of idiot would get them confused.
-// People in fact got them confused so much, it was so common to
-// mislabel Windows-1252 text as ISO-8859-1, that most modern web
-// browsers and email clients treat the MIME charset of ISO-8859-1
-// as actually Windows-1252, behavior now standard in the HTML5 spec.)
-//
-// [1]: http://en.wikipedia.org/wiki/Unicode_subscripts_and_superscripts
-// [2]: http://en.wikipedia.org/wiki/Number_Forms
-// [3]: http://en.wikipedia.org/wiki/ISO/IEC_8859-1
-// [4]: http://en.wikipedia.org/wiki/Windows-1252
-LatexCmds['¹'] = bind(LatexFragment, '^1');
-LatexCmds['²'] = bind(LatexFragment, '^2');
-LatexCmds['³'] = bind(LatexFragment, '^3');
-LatexCmds['¼'] = bind(LatexFragment, '\\frac14');
-LatexCmds['½'] = bind(LatexFragment, '\\frac12');
-LatexCmds['¾'] = bind(LatexFragment, '\\frac34');
-
-var BinaryOperator = P(Symbol, function(_, _super) {
-  _.init = function(ctrlSeq, html, text) {
-    _super.init.call(this,
-      ctrlSeq, '<span class="binary-operator">'+html+'</span>', text
-    );
-  };
-});
-
-var PlusMinus = P(BinaryOperator, function(_) {
-  _.init = VanillaSymbol.prototype.init;
-
-  _.respace = function() {
-    if (!this[L]) {
-      this.jQ[0].className = '';
-    }
-    else if (
-      this[L] instanceof BinaryOperator &&
-      this[R] && !(this[R] instanceof BinaryOperator)
-    ) {
-      this.jQ[0].className = 'unary-operator';
+    var latex = this.ends[L].latex();
+    if (!latex) latex = ' ';
+    var cmd = LatexCmds[latex];
+    if (cmd) {
+      cmd = cmd(latex);
+      if (this._replacedFragment) cmd.replaces(this._replacedFragment);
+      cmd.createLeftOf(cursor);
     }
     else {
-      this.jQ[0].className = 'binary-operator';
+      cmd = TextBlock();
+      cmd.replaces(latex);
+      cmd.createLeftOf(cursor);
+      cursor.insRightOf(cmd);
+      if (this._replacedFragment)
+        this._replacedFragment.remove();
     }
-    return this;
   };
 });
 
-LatexCmds['+'] = bind(PlusMinus, '+', '+');
-//yes, these are different dashes, I think one is an en dash and the other is a hyphen
-LatexCmds['–'] = LatexCmds['-'] = bind(PlusMinus, '-', '&minus;');
-LatexCmds['±'] = LatexCmds.pm = LatexCmds.plusmn = LatexCmds.plusminus =
-  bind(PlusMinus,'\\pm ','&plusmn;');
-LatexCmds.mp = LatexCmds.mnplus = LatexCmds.minusplus =
-  bind(PlusMinus,'\\mp ','&#8723;');
-
-CharCmds['*'] = LatexCmds.sdot = LatexCmds.cdot =
-  bind(BinaryOperator, '\\cdot ', '&middot;');
-//semantically should be &sdot;, but &middot; looks better
-
-LatexCmds['='] = bind(BinaryOperator, '=', '=');
-LatexCmds['<'] = bind(BinaryOperator, '<', '&lt;');
-LatexCmds['>'] = bind(BinaryOperator, '>', '&gt;');
+/************************************
+ * Symbols for Advanced Mathematics
+ ***********************************/
 
 LatexCmds.notin =
-LatexCmds.sim =
 LatexCmds.cong =
 LatexCmds.equiv =
 LatexCmds.oplus =
-LatexCmds.otimes = P(BinaryOperator, function(_, _super) {
+LatexCmds.otimes = P(BinaryOperator, function(_, super_) {
   _.init = function(latex) {
-    _super.init.call(this, '\\'+latex+' ', '&'+latex+';');
+    super_.init.call(this, '\\'+latex+' ', '&'+latex+';');
   };
 });
-
-LatexCmds.times = bind(BinaryOperator, '\\times ', '&times;', '[x]');
-
-LatexCmds['÷'] = LatexCmds.div = LatexCmds.divide = LatexCmds.divides =
-  bind(BinaryOperator,'\\div ','&divide;', '[/]');
 
 LatexCmds['≠'] = LatexCmds.ne = LatexCmds.neq = bind(BinaryOperator,'\\ne ','&ne;');
 
@@ -2823,14 +3293,6 @@ LatexCmds.because = bind(BinaryOperator,'\\because ','&#8757;');
 LatexCmds.prop = LatexCmds.propto = bind(BinaryOperator,'\\propto ','&prop;');
 
 LatexCmds['≈'] = LatexCmds.asymp = LatexCmds.approx = bind(BinaryOperator,'\\approx ','&asymp;');
-
-LatexCmds.lt = bind(BinaryOperator,'<','&lt;');
-
-LatexCmds.gt = bind(BinaryOperator,'>','&gt;');
-
-LatexCmds['≤'] = LatexCmds.le = LatexCmds.leq = bind(BinaryOperator,'\\le ','&le;');
-
-LatexCmds['≥'] = LatexCmds.ge = LatexCmds.geq = bind(BinaryOperator,'\\ge ','&ge;');
 
 LatexCmds.isin = LatexCmds['in'] = bind(BinaryOperator,'\\in ','&isin;');
 
@@ -2874,20 +3336,6 @@ LatexCmds.notsupsete = LatexCmds.notsupseteq =
 LatexCmds.nsupersete = LatexCmds.nsuperseteq =
 LatexCmds.notsupersete = LatexCmds.notsuperseteq =
   bind(BinaryOperator,'\\not\\supseteq ','&#8841;');
-
-
-//sum, product, coproduct, integral
-var BigSymbol = P(Symbol, function(_, _super) {
-  _.init = function(ch, html) {
-    _super.init.call(this, ch, '<big>'+html+'</big>');
-  };
-});
-
-LatexCmds['∑'] = LatexCmds.sum = LatexCmds.summation = bind(BigSymbol,'\\sum ','&sum;');
-LatexCmds['∏'] = LatexCmds.prod = LatexCmds.product = bind(BigSymbol,'\\prod ','&prod;');
-LatexCmds.coprod = LatexCmds.coproduct = bind(BigSymbol,'\\coprod ','&#8720;');
-LatexCmds['∫'] = LatexCmds['int'] = LatexCmds.integral = bind(BigSymbol,'\\int ','&int;');
-
 
 
 //the canonical sets of numbers
@@ -2996,7 +3444,7 @@ LatexCmds.nwarrow = bind(VanillaSymbol, '\\nwarrow ', '&#8598;');
 LatexCmds.ldots = bind(VanillaSymbol, '\\ldots ', '&#8230;');
 LatexCmds.cdots = bind(VanillaSymbol, '\\cdots ', '&#8943;');
 LatexCmds.vdots = bind(VanillaSymbol, '\\vdots ', '&#8942;');
-LatexCmds.ddots = bind(VanillaSymbol, '\\ddots ', '&#8944;');
+LatexCmds.ddots = bind(VanillaSymbol, '\\ddots ', '&#8945;');
 LatexCmds.surd = bind(VanillaSymbol, '\\surd ', '&#8730;');
 LatexCmds.triangle = bind(VanillaSymbol, '\\triangle ', '&#9653;');
 LatexCmds.ell = bind(VanillaSymbol, '\\ell ', '&#8467;');
@@ -3028,15 +3476,19 @@ LatexCmds.lfloor = bind(VanillaSymbol, '\\lfloor ', '&#8970;');
 LatexCmds.rfloor = bind(VanillaSymbol, '\\rfloor ', '&#8971;');
 LatexCmds.lceil = bind(VanillaSymbol, '\\lceil ', '&#8968;');
 LatexCmds.rceil = bind(VanillaSymbol, '\\rceil ', '&#8969;');
-LatexCmds.slash = bind(VanillaSymbol, '\\slash ', '&#47;');
-LatexCmds.opencurlybrace = bind(VanillaSymbol, '\\opencurlybrace ', '&#123;');
-LatexCmds.closecurlybrace = bind(VanillaSymbol, '\\closecurlybrace ', '&#125;');
+LatexCmds.opencurlybrace = LatexCmds.lbrace = bind(VanillaSymbol, '\\lbrace ', '{');
+LatexCmds.closecurlybrace = LatexCmds.rbrace = bind(VanillaSymbol, '\\rbrace ', '}');
 
 //various symbols
 
-LatexCmds.caret = bind(VanillaSymbol,'\\caret ','^');
-LatexCmds.underscore = bind(VanillaSymbol,'\\underscore ','_');
-LatexCmds.backslash = bind(VanillaSymbol,'\\backslash ','\\');
+LatexCmds['∫'] =
+LatexCmds['int'] =
+LatexCmds.integral = bind(Symbol,'\\int ','<big>&int;</big>');
+
+LatexCmds.caret = bind(VanillaSymbol,'\\text{^}','^');
+LatexCmds.underscore = bind(VanillaSymbol,'\\_','_');
+
+LatexCmds.slash = bind(VanillaSymbol, '/');
 LatexCmds.vert = bind(VanillaSymbol,'|');
 LatexCmds.perp = LatexCmds.perpendicular = bind(VanillaSymbol,'\\perp ','&perp;');
 LatexCmds.nabla = LatexCmds.del = bind(VanillaSymbol,'\\nabla ','&nabla;');
@@ -3104,7 +3556,7 @@ LatexCmds.image = LatexCmds.imagin = LatexCmds.imaginary = LatexCmds.Imaginary =
 
 LatexCmds.part = LatexCmds.partial = bind(VanillaSymbol,'\\partial ','&part;');
 
-LatexCmds.inf = LatexCmds.infin = LatexCmds.infty = LatexCmds.infinity =
+LatexCmds.infty = LatexCmds.infin = LatexCmds.infinity =
   bind(VanillaSymbol,'\\infty ','&infin;');
 
 LatexCmds.alef = LatexCmds.alefsym = LatexCmds.aleph = LatexCmds.alephsym =
@@ -3133,759 +3585,1889 @@ LatexCmds.cap = LatexCmds.intersect = LatexCmds.intersection =
 LatexCmds.deg = LatexCmds.degree = bind(VanillaSymbol,'^\\circ ','&deg;');
 
 LatexCmds.ang = LatexCmds.angle = bind(VanillaSymbol,'\\angle ','&ang;');
+/*********************************
+ * Symbols for Basic Mathematics
+ ********************************/
 
-
-var NonItalicizedFunction = P(Symbol, function(_, _super) {
-  _.init = function(fn) {
-    _super.init.call(this, '\\'+fn+' ', '<span>'+fn+'</span>');
-  };
-  _.respace = function()
-  {
-    this.jQ[0].className =
-      (this[R] instanceof SupSub || this[R] instanceof Bracket) ?
-      '' : 'non-italicized-function';
+var Digit = P(VanillaSymbol, function(_, super_) {
+  _.createLeftOf = function(cursor) {
+    if (cursor.options.autoSubscriptNumerals
+        && cursor.parent !== cursor.parent.parent.sub
+        && ((cursor[L] instanceof Variable && cursor[L].isItalic !== false)
+            || (cursor[L] instanceof SupSub
+                && cursor[L][L] instanceof Variable
+                && cursor[L][L].isItalic !== false))) {
+      LatexCmds._().createLeftOf(cursor);
+      super_.createLeftOf.call(this, cursor);
+      cursor.insRightOf(cursor.parent.parent);
+    }
+    else super_.createLeftOf.call(this, cursor);
   };
 });
 
-LatexCmds.ln =
-LatexCmds.lg =
-LatexCmds.log =
-LatexCmds.span =
-LatexCmds.proj =
-LatexCmds.det =
-LatexCmds.dim =
-LatexCmds.min =
-LatexCmds.max =
-LatexCmds.mod =
-LatexCmds.lcm =
-LatexCmds.gcd =
-LatexCmds.gcf =
-LatexCmds.hcf =
-LatexCmds.lim = NonItalicizedFunction;
-
-(function() {
-  var trig = ['sin', 'cos', 'tan', 'sec', 'cosec', 'csc', 'cotan', 'cot'];
-  for (var i in trig) {
-    LatexCmds[trig[i]] =
-    LatexCmds[trig[i]+'h'] =
-    LatexCmds['a'+trig[i]] = LatexCmds['arc'+trig[i]] =
-    LatexCmds['a'+trig[i]+'h'] = LatexCmds['arc'+trig[i]+'h'] =
-      NonItalicizedFunction;
-  }
-}());
-
-// Parser MathCommand
-var latexMathParser = (function() {
-  function commandToBlock(cmd) {
-    var block = MathBlock();
-    cmd.adopt(block, 0, 0);
-    return block;
-  }
-  function joinBlocks(blocks) {
-    var firstBlock = blocks[0] || MathBlock();
-
-    for (var i = 1; i < blocks.length; i += 1) {
-      blocks[i].children().adopt(firstBlock, firstBlock.ends[R], 0);
-    }
-
-    return firstBlock;
-  }
-
-  var string = Parser.string;
-  var regex = Parser.regex;
-  var letter = Parser.letter;
-  var any = Parser.any;
-  var optWhitespace = Parser.optWhitespace;
-  var succeed = Parser.succeed;
-  var fail = Parser.fail;
-
-  // Parsers yielding MathCommands
-  var variable = letter.map(Variable);
-  var symbol = regex(/^[^${}\\_^]/).map(VanillaSymbol);
-
-  var controlSequence =
-    regex(/^[^\\a-eg-zA-Z]/) // hotfix #164; match MathBlock::write
-    .or(string('\\').then(
-      regex(/^[a-z]+/i)
-      .or(regex(/^\s+/).result(' '))
-      .or(any)
-    )).then(function(ctrlSeq) {
-      var cmdKlass = LatexCmds[ctrlSeq];
-
-      if (cmdKlass) {
-        return cmdKlass(ctrlSeq).parser();
-      }
-      else {
-        return fail('unknown command: \\'+ctrlSeq);
-      }
-    })
-  ;
-
-  var command =
-    controlSequence
-    .or(variable)
-    .or(symbol)
-  ;
-
-  // Parsers yielding MathBlocks
-  var mathGroup = string('{').then(function() { return mathSequence; }).skip(string('}'));
-  var mathBlock = optWhitespace.then(mathGroup.or(command.map(commandToBlock)));
-  var mathSequence = mathBlock.many().map(joinBlocks).skip(optWhitespace);
-
-  var optMathBlock =
-    string('[').then(
-      mathBlock.then(function(block) {
-        return block.join('latex') !== ']' ? succeed(block) : fail();
-      })
-      .many().map(joinBlocks).skip(optWhitespace)
-    ).skip(string(']'))
-  ;
-
-  var latexMath = mathSequence;
-
-  latexMath.block = mathBlock;
-  latexMath.optBlock = optMathBlock;
-  return latexMath;
-})();
-/********************************************
- * Cursor and Selection "singleton" classes
- *******************************************/
-
-/* The main thing that manipulates the Math DOM. Makes sure to manipulate the
-HTML DOM to match. */
-
-/* Sort of singletons, since there should only be one per editable math
-textbox, but any one HTML document can contain many such textboxes, so any one
-JS environment could actually contain many instances. */
-
-//A fake cursor in the fake textbox that the math is rendered in.
-var Cursor = P(Point, function(_) {
-  _.init = function(root) {
-    this.parent = this.root = root;
-    var jQ = this.jQ = this._jQ = $('<span class="cursor">&#8203;</span>');
-
-    //closured for setInterval
-    this.blink = function(){ jQ.toggleClass('blink'); };
-
-    this.upDownCache = {};
+var Variable = P(Symbol, function(_, super_) {
+  _.init = function(ch, html) {
+    super_.init.call(this, ch, '<var>'+(html || ch)+'</var>');
   };
-
-  _.show = function() {
-    this.jQ = this._jQ.removeClass('blink');
-    if ('intervalId' in this) //already was shown, just restart interval
-      clearInterval(this.intervalId);
-    else { //was hidden and detached, insert this.jQ back into HTML DOM
-      if (this[R]) {
-        if (this.selection && this.selection.ends[L][L] === this[L])
-          this.jQ.insertBefore(this.selection.jQ);
-        else
-          this.jQ.insertBefore(this[R].jQ.first());
-      }
-      else
-        this.jQ.appendTo(this.parent.jQ);
-      this.parent.focus();
-    }
-    this.intervalId = setInterval(this.blink, 500);
-    return this;
-  };
-  _.hide = function() {
-    if ('intervalId' in this)
-      clearInterval(this.intervalId);
-    delete this.intervalId;
-    this.jQ.detach();
-    this.jQ = $();
-    return this;
-  };
-
-  _.withDirInsertAt = function(dir, parent, withDir, oppDir) {
-    var oldParent = this.parent;
-    this.parent = parent;
-    this[dir] = withDir;
-    this[-dir] = oppDir;
-    oldParent.blur();
-  };
-  _.insDirOf = function(dir, el) {
-    prayDirection(dir);
-    this.withDirInsertAt(dir, el.parent, el[dir], el);
-    this.parent.jQ.addClass('hasCursor');
-    this.jQ.insDirOf(dir, el.jQ);
-    return this;
-  };
-  _.insLeftOf = function(el) { return this.insDirOf(L, el); };
-  _.insRightOf = function(el) { return this.insDirOf(R, el); };
-
-  _.insAtDirEnd = function(dir, el) {
-    prayDirection(dir);
-    this.withDirInsertAt(dir, el, 0, el.ends[dir]);
-
-    // never insert before textarea
-    if (dir === L && el.textarea) {
-      this.jQ.insDirOf(-dir, el.textarea);
-    }
-    else {
-      this.jQ.insAtDirEnd(dir, el.jQ);
-    }
-
-    el.focus();
-
-    return this;
-  };
-  _.insAtLeftEnd = function(el) { return this.insAtDirEnd(L, el); };
-  _.insAtRightEnd = function(el) { return this.insAtDirEnd(R, el); };
-
-  _.hopDir = function(dir) {
-    prayDirection(dir);
-
-    this.jQ.insDirOf(dir, this[dir].jQ);
-    this[-dir] = this[dir];
-    this[dir] = this[dir][dir];
-    return this;
-  };
-  _.hopLeft = function() { return this.hopDir(L); };
-  _.hopRight = function() { return this.hopDir(R); };
-
-  _.moveDirWithin = function(dir, block) {
-    prayDirection(dir);
-
-    if (this[dir]) {
-      if (this[dir].ends[-dir]) this.insAtDirEnd(-dir, this[dir].ends[-dir]);
-      else this.hopDir(dir);
-    }
-    else {
-      // we're at the beginning/end of the containing block, so do nothing
-      if (this.parent === block) return;
-
-      if (this.parent[dir]) this.insAtDirEnd(-dir, this.parent[dir]);
-      else this.insDirOf(dir, this.parent.parent);
-    }
-  };
-  _.moveLeftWithin = function(block) {
-    return this.moveDirWithin(L, block);
-  };
-  _.moveRightWithin = function(block) {
-    return this.moveDirWithin(R, block);
-  };
-  _.moveDir = function(dir) {
-    prayDirection(dir);
-
-    clearUpDownCache(this);
-
-    if (this.selection)  {
-      this.insDirOf(dir, this.selection.ends[dir]).clearSelection();
-    }
-    else {
-      this.moveDirWithin(dir, this.root);
-    }
-
-    return this.show();
-  };
-  _.moveLeft = function() { return this.moveDir(L); };
-  _.moveRight = function() { return this.moveDir(R); };
-
-  /**
-   * moveUp and moveDown have almost identical algorithms:
-   * - first check left and right, if so insAtLeft/RightEnd of them
-   * - else check the parent's 'up'/'down' property - if it's a function,
-   *   call it with the cursor as the sole argument and use the return value.
-   *
-   *   Given undefined, will bubble up to the next ancestor block.
-   *   Given false, will stop bubbling.
-   *   Given a MathBlock,
-   *     + if there is a cached Point in the block, insert there
-   *     + else, seekHoriz within the block to the current x-coordinate (to be
-   *       as close to directly above/below the current position as possible)
-   */
-  _.moveUp = function() { return moveUpDown(this, 'up'); };
-  _.moveDown = function() { return moveUpDown(this, 'down'); };
-  function moveUpDown(self, dir) {
-    self.clearSelection().show();
-    if (self[R][dir]) self.insAtLeftEnd(self[R][dir]);
-    else if (self[L][dir]) self.insAtRightEnd(self[L][dir]);
-    else {
-      var ancestorBlock = self.parent;
-      do {
-        var prop = ancestorBlock[dir];
-        if (prop) {
-          if (typeof prop === 'function') prop = ancestorBlock[dir](self);
-          if (prop === false || prop instanceof MathBlock) {
-            self.upDownCache[ancestorBlock.id] = Point(self.parent, self[L], self[R]);
-
-            if (prop instanceof MathBlock) {
-              var cached = self.upDownCache[prop.id];
-
-              if (cached) {
-                if (cached[R]) {
-                  self.insLeftOf(cached[R]);
-                } else {
-                  self.insAtRightEnd(cached.parent);
-                }
-              } else {
-                var pageX = offset(self).left;
-                self.insAtRightEnd(prop);
-                self.seekHoriz(pageX, prop);
-              }
-            }
-            break;
-          }
-        }
-        ancestorBlock = ancestorBlock.parent.parent;
-      } while (ancestorBlock);
-    }
-    return self;
-  }
-
-  _.seek = function(target, pageX, pageY) {
-    clearUpDownCache(this);
-    var cmd, block, cursor = this.clearSelection().show();
-    if (target.hasClass('empty')) {
-      cursor.insAtLeftEnd(MathElement[target.attr(mqBlockId)]);
-      return cursor;
-    }
-
-    cmd = MathElement[target.attr(mqCmdId)];
-    if (cmd instanceof Symbol) { //insert at whichever side is closer
-      if (target.outerWidth() > 2*(pageX - target.offset().left))
-        cursor.insLeftOf(cmd);
-      else
-        cursor.insRightOf(cmd);
-
-      return cursor;
-    }
-    if (!cmd) {
-      block = MathElement[target.attr(mqBlockId)];
-      if (!block) { //if no MathQuill data, try parent, if still no, just start from the root
-        target = target.parent();
-        cmd = MathElement[target.attr(mqCmdId)];
-        if (!cmd) {
-          block = MathElement[target.attr(mqBlockId)];
-          if (!block) block = cursor.root;
-        }
-      }
-    }
-
-    if (cmd)
-      cursor.insRightOf(cmd);
-    else
-      cursor.insAtRightEnd(block);
-
-    return cursor.seekHoriz(pageX, cursor.root);
-  };
-  _.seekHoriz = function(pageX, block) {
-    //move cursor to position closest to click
-    var cursor = this;
-    var dist = offset(cursor).left - pageX;
-    var leftDist;
-
-    do {
-      cursor.moveLeftWithin(block);
-      leftDist = dist;
-      dist = offset(cursor).left - pageX;
-    }
-    while (dist > 0 && (cursor[L] || cursor.parent !== block));
-
-    if (-dist > leftDist) cursor.moveRightWithin(block);
-
-    return cursor;
-  };
-  function offset(self) {
-    //in Opera 11.62, .getBoundingClientRect() and hence jQuery::offset()
-    //returns all 0's on inline elements with negative margin-right (like
-    //the cursor) at the end of their parent, so temporarily remove the
-    //negative margin-right when calling jQuery::offset()
-    //Opera bug DSK-360043
-    //http://bugs.jquery.com/ticket/11523
-    //https://github.com/jquery/jquery/pull/717
-    var offset = self.jQ.removeClass('cursor').offset();
-    self.jQ.addClass('cursor');
-    return offset;
-  }
-  _.writeLatex = function(latex) {
-    var self = this;
-    clearUpDownCache(self);
-    self.show().deleteSelection();
-
-    var all = Parser.all;
-    var eof = Parser.eof;
-
-    var block = latexMathParser.skip(eof).or(all.result(false)).parse(latex);
-
-    if (block) {
-      block.children().adopt(self.parent, self[L], self[R]);
-      MathElement.jQize(block.join('html')).insertBefore(self.jQ);
-      self[L] = block.ends[R];
-      block.finalizeInsert();
-      self.parent.bubble('redraw');
-    }
-
-    return this.hide();
-  };
-  _.write = function(ch) {
-    var seln = this.prepareWrite();
-    return this.insertCh(ch, seln);
-  };
-  _.insertCh = function(ch, replacedFragment) {
-    this.parent.write(this, ch, replacedFragment);
-    return this;
-  };
-  _.insertCmd = function(latexCmd, replacedFragment) {
-    var cmd = LatexCmds[latexCmd];
-    if (cmd) {
-      cmd = cmd(latexCmd);
-      if (replacedFragment) cmd.replaces(replacedFragment);
-      cmd.createLeftOf(this);
-    }
-    else {
-      cmd = TextBlock();
-      cmd.replaces(latexCmd);
-      cmd.ends[L].focus = function(){ delete this.focus; return this; };
-      cmd.createLeftOf(this);
-      this.insRightOf(cmd);
-      if (replacedFragment)
-        replacedFragment.remove();
-    }
-    return this;
-  };
-  _.unwrapGramp = function() {
-    var gramp = this.parent.parent;
-    var greatgramp = gramp.parent;
-    var rightward = gramp[R];
-    var cursor = this;
-
-    var leftward = gramp[L];
-    gramp.disown().eachChild(function(uncle) {
-      if (uncle.isEmpty()) return;
-
-      uncle.children()
-        .adopt(greatgramp, leftward, rightward)
-        .each(function(cousin) {
-          cousin.jQ.insertBefore(gramp.jQ.first());
-        })
-      ;
-
-      leftward = uncle.ends[R];
-    });
-
-    if (!this[R]) { //then find something to be rightward to insLeftOf
-      if (this[L])
-        this[R] = this[L][R];
-      else {
-        while (!this[R]) {
-          this.parent = this.parent[R];
-          if (this.parent)
-            this[R] = this.parent.ends[L];
-          else {
-            this[R] = gramp[R];
-            this.parent = greatgramp;
-            break;
-          }
-        }
-      }
-    }
-    if (this[R])
-      this.insLeftOf(this[R]);
-    else
-      this.insAtRightEnd(greatgramp);
-
-    gramp.jQ.remove();
-
-    if (gramp[L])
-      gramp[L].respace();
-    if (gramp[R])
-      gramp[R].respace();
-  };
-  _.deleteDir = function(dir) {
-    prayDirection(dir);
-    clearUpDownCache(this);
-    this.show();
-
-    if (this.deleteSelection()); // pass
-    else if (this[dir]) {
-      if (this[dir].isEmpty())
-        this[dir] = this[dir].remove()[dir];
-      else
-        this.selectDir(dir);
-    }
-    else if (this.parent !== this.root) {
-      if (this.parent.parent.isEmpty())
-        return this.insDirOf(-dir, this.parent.parent).deleteDir(dir);
-      else
-        this.unwrapGramp();
-    }
-
-    if (this[L])
-      this[L].respace();
-    if (this[R])
-      this[R].respace();
-    this.parent.bubble('redraw');
-
-    return this;
-  };
-  _.backspace = function() { return this.deleteDir(L); };
-  _.deleteForward = function() { return this.deleteDir(R); };
-  _.selectFrom = function(anticursor) {
-    //find ancestors of each with common parent
-    var oneA = this, otherA = anticursor; //one ancestor, the other ancestor
-    loopThroughAncestors: while (true) {
-      for (var oneI = this; oneI !== oneA.parent.parent; oneI = oneI.parent.parent) //one intermediate, the other intermediate
-        if (oneI.parent === otherA.parent) {
-          left = oneI;
-          right = otherA;
-          break loopThroughAncestors;
-        }
-
-      for (var otherI = anticursor; otherI !== otherA.parent.parent; otherI = otherI.parent.parent)
-        if (oneA.parent === otherI.parent) {
-          left = oneA;
-          right = otherI;
-          break loopThroughAncestors;
-        }
-
-      if (oneA.parent.parent)
-        oneA = oneA.parent.parent;
-      if (otherA.parent.parent)
-        otherA = otherA.parent.parent;
-    }
-    //figure out which is leftward and which is rightward
-    var left, right, leftRight;
-    if (left[R] !== right) {
-      for (var rightward = left; rightward; rightward = rightward[R]) {
-        if (rightward === right[L]) {
-          leftRight = true;
-          break;
-        }
-      }
-      if (!leftRight) {
-        leftRight = right;
-        right = left;
-        left = leftRight;
-      }
-    }
-    this.hide().selection = Selection(left[L][R] || left.parent.ends[L], right[R][L] || right.parent.ends[R]);
-    this.insRightOf(right[R][L] || right.parent.ends[R]);
-    this.root.selectionChanged();
-  };
-  _.selectDir = function(dir) {
-    prayDirection(dir);
-    clearUpDownCache(this);
-
-    if (this.selection) {
-      // if cursor is at the (dir) edge of selection
-      if (this.selection.ends[dir] === this[-dir]) {
-        // then extend (dir) if possible
-        if (this[dir]) this.hopDir(dir).selection.extendDir(dir);
-        // else level up if possible
-        else if (this.parent !== this.root) {
-          this.insDirOf(dir, this.parent.parent).selection.levelUp();
-        }
-      }
-      // else cursor is at the (-dir) edge of selection, retract if possible
-      else {
-        this.hopDir(dir);
-
-        // clear the selection if we only have one thing selected
-        if (this.selection.ends[dir] === this.selection.ends[-dir]) {
-          this.clearSelection().show();
-          return;
-        }
-
-        this.selection.retractDir(dir);
-      }
-    }
-    // no selection, create one
-    else {
-      if (this[dir]) this.hopDir(dir);
-      // else edge of a block
-      else {
-        if (this.parent === this.root) return;
-
-        this.insDirOf(dir, this.parent.parent);
-      }
-
-      this.hide().selection = Selection(this[-dir]);
-    }
-
-    this.root.selectionChanged();
-  };
-  _.selectLeft = function() { return this.selectDir(L); };
-  _.selectRight = function() { return this.selectDir(R); };
-
-  function clearUpDownCache(self) {
-    self.upDownCache = {};
-  }
-
-  _.prepareMove = function() {
-    clearUpDownCache(this);
-    return this.show().clearSelection();
-  };
-  _.prepareEdit = function() {
-    clearUpDownCache(this);
-    return this.show().deleteSelection();
-  };
-  _.prepareWrite = function() {
-    clearUpDownCache(this);
-    return this.show().replaceSelection();
-  };
-
-  _.clearSelection = function() {
-    if (this.selection) {
-      this.selection.clear();
-      delete this.selection;
-      this.root.selectionChanged();
-    }
-    return this;
-  };
-  _.deleteSelection = function() {
-    if (!this.selection) return false;
-
-    this[L] = this.selection.ends[L][L];
-    this[R] = this.selection.ends[R][R];
-    this.selection.remove();
-    this.root.selectionChanged();
-    return delete this.selection;
-  };
-  _.replaceSelection = function() {
-    var seln = this.selection;
-    if (seln) {
-      this[L] = seln.ends[L][L];
-      this[R] = seln.ends[R][R];
-      delete this.selection;
-    }
-    return seln;
+  _.text = function() {
+    var text = this.ctrlSeq;
+    if (this[L] && !(this[L] instanceof Variable)
+        && !(this[L] instanceof BinaryOperator))
+      text = '*' + text;
+    if (this[R] && !(this[R] instanceof BinaryOperator)
+        && !(this[R].ctrlSeq === '^'))
+      text += '*';
+    return text;
   };
 });
 
-var Selection = P(MathFragment, function(_, _super) {
-  _.init = function() {
-    var frag = this;
-    _super.init.apply(frag, arguments);
-
-    frag.jQwrap(frag.jQ);
-  };
-  _.jQwrap = function(children) {
-    this.jQ = children.wrapAll('<span class="selection"></span>').parent();
-      //can't do wrapAll(this.jQ = $(...)) because wrapAll will clone it
-  };
-  _.adopt = function() {
-    this.jQ.replaceWith(this.jQ = this.jQ.children());
-    return _super.adopt.apply(this, arguments);
-  };
-  _.clear = function() {
-    this.jQ.replaceWith(this.jQ.children());
-    return this;
-  };
-  _.levelUp = function() {
-    var seln = this,
-      gramp = seln.ends[L] = seln.ends[R] = seln.ends[R].parent.parent;
-    seln.clear().jQwrap(gramp.jQ);
-    return seln;
-  };
-  _.extendDir = function(dir) {
-    prayDirection(dir);
-    this.ends[dir] = this.ends[dir][dir];
-    this.ends[dir].jQ.insAtDirEnd(dir, this.jQ);
-    return this;
-  };
-  _.extendLeft = function() { return this.extendDir(L); };
-  _.extendRight = function() { return this.extendDir(R); };
-
-  _.retractDir = function(dir) {
-    prayDirection(dir);
-    this.ends[-dir].jQ.insDirOf(-dir, this.jQ);
-    this.ends[-dir] = this.ends[-dir][dir];
-  };
-  _.retractRight = function() { return this.retractDir(R); };
-  _.retractLeft = function() { return this.retractDir(L); };
-});
-/*********************************************************
- * The actual jQuery plugin and document ready handlers.
- ********************************************************/
-
-//The publicy exposed method of jQuery.prototype, available (and meant to be
-//called) on jQuery-wrapped HTML DOM elements.
-jQuery.fn.mathquill = function(cmd, latex) {
-  switch (cmd) {
-  case 'redraw':
-    return this.each(function() {
-      var blockId = $(this).attr(mqBlockId),
-        rootBlock = blockId && MathElement[blockId];
-      if (rootBlock) {
-        (function postOrderRedraw(el) {
-          el.eachChild(postOrderRedraw);
-          if (el.redraw) el.redraw();
-        }(rootBlock));
-      }
-    });
-  case 'revert':
-    return this.each(function() {
-      var blockId = $(this).attr(mqBlockId),
-        block = blockId && MathElement[blockId];
-      if (block && block.revert)
-        block.revert();
-    });
-  case 'latex':
-    if (arguments.length > 1) {
-      return this.each(function() {
-        var blockId = $(this).attr(mqBlockId),
-          block = blockId && MathElement[blockId];
-        if (block)
-          block.renderLatex(latex);
-      });
-    }
-
-    var blockId = $(this).attr(mqBlockId),
-      block = blockId && MathElement[blockId];
-    return block && block.latex();
-  case 'text':
-    var blockId = $(this).attr(mqBlockId),
-      block = blockId && MathElement[blockId];
-    return block && block.text();
-  case 'html':
-    return this.html().replace(/ ?hasCursor|hasCursor /, '')
-      .replace(/ class=(""|(?= |>))/g, '')
-      .replace(/<span class="?cursor( blink)?"?><\/span>/i, '')
-      .replace(/<span class="?textarea"?><textarea><\/textarea><\/span>/i, '');
-  case 'write':
-    if (arguments.length > 1)
-      return this.each(function() {
-        var blockId = $(this).attr(mqBlockId),
-          block = blockId && MathElement[blockId],
-          cursor = block && block.cursor;
-
-        if (cursor)
-          cursor.writeLatex(latex).parent.blur();
-      });
-  case 'cmd':
-    if (arguments.length > 1)
-      return this.each(function() {
-        var blockId = $(this).attr(mqBlockId),
-          block = blockId && MathElement[blockId],
-          cursor = block && block.cursor;
-
-        if (cursor) {
-          var seln = cursor.prepareWrite();
-          if (/^\\[a-z]+$/i.test(latex)) cursor.insertCmd(latex.slice(1), seln);
-          else cursor.insertCh(latex, seln);
-          cursor.hide().parent.blur();
-        }
-      });
-  default:
-    var textbox = cmd === 'textbox',
-      editable = textbox || cmd === 'editable',
-      RootBlock = textbox ? RootTextBlock : RootMathBlock;
-    return this.each(function() {
-      createRoot($(this), RootBlock(), textbox, editable);
-    });
+Options.p.autoCommands = { _maxLength: 0 };
+optionProcessors.autoCommands = function(cmds) {
+  if (!/^[a-z]+(?: [a-z]+)*$/i.test(cmds)) {
+    throw '"'+cmds+'" not a space-delimited list of only letters';
   }
+  var list = cmds.split(' '), dict = {}, maxLength = 0;
+  for (var i = 0; i < list.length; i += 1) {
+    var cmd = list[i];
+    if (cmd.length < 2) {
+      throw 'autocommand "'+cmd+'" not minimum length of 2';
+    }
+    if (LatexCmds[cmd] === OperatorName) {
+      throw '"' + cmd + '" is a built-in operator name';
+    }
+    dict[cmd] = 1;
+    maxLength = max(maxLength, cmd.length);
+  }
+  dict._maxLength = maxLength;
+  return dict;
 };
 
-//on document ready, mathquill-ify all `<tag class="mathquill-*">latex</tag>`
-//elements according to their CSS class.
-jQuery(function() {
-  jQuery('.mathquill-editable:not(.mathquill-rendered-math)').mathquill('editable');
-  jQuery('.mathquill-textbox:not(.mathquill-rendered-math)').mathquill('textbox');
-  jQuery('.mathquill-embedded-latex').mathquill();
+var Letter = P(Variable, function(_, super_) {
+  _.init = function(ch) { return super_.init.call(this, this.letter = ch); };
+  _.createLeftOf = function(cursor) {
+    var autoCmds = cursor.options.autoCommands, maxLength = autoCmds._maxLength;
+    if (maxLength > 0) {
+      // want longest possible autocommand, so join together longest
+      // sequence of letters
+      var str = this.letter, l = cursor[L], i = 1;
+      while (l instanceof Letter && i < maxLength) {
+        str = l.letter + str, l = l[L], i += 1;
+      }
+      // check for an autocommand, going thru substrings longest to shortest
+      while (str.length) {
+        if (autoCmds.hasOwnProperty(str)) {
+          for (var i = 2, l = cursor[L]; i < str.length; i += 1, l = l[L]);
+          Fragment(l, cursor[L]).remove();
+          cursor[L] = l[L];
+          return LatexCmds[str](str).createLeftOf(cursor);
+        }
+        str = str.slice(1);
+      }
+    }
+    super_.createLeftOf.apply(this, arguments);
+  };
+  _.italicize = function(bool) {
+    this.isItalic = bool;
+    this.jQ.toggleClass('mq-operator-name', !bool);
+    return this;
+  };
+  _.finalizeTree = _.siblingDeleted = _.siblingCreated = function(opts, dir) {
+    // don't auto-un-italicize if the sibling to my right changed (dir === R or
+    // undefined) and it's now a Letter, it will un-italicize everyone
+    if (dir !== L && this[R] instanceof Letter) return;
+    this.autoUnItalicize(opts);
+  };
+  _.autoUnItalicize = function(opts) {
+    var autoOps = opts.autoOperatorNames;
+    if (autoOps._maxLength === 0) return;
+    // want longest possible operator names, so join together entire contiguous
+    // sequence of letters
+    var str = this.letter;
+    for (var l = this[L]; l instanceof Letter; l = l[L]) str = l.letter + str;
+    for (var r = this[R]; r instanceof Letter; r = r[R]) str += r.letter;
+
+    // removeClass and delete flags from all letters before figuring out
+    // which, if any, are part of an operator name
+    Fragment(l[R] || this.parent.ends[L], r[L] || this.parent.ends[R]).each(function(el) {
+      el.italicize(true).jQ.removeClass('mq-first mq-last');
+      el.ctrlSeq = el.letter;
+    });
+
+    // check for operator names: at each position from left to right, check
+    // substrings from longest to shortest
+    outer: for (var i = 0, first = l[R] || this.parent.ends[L]; i < str.length; i += 1, first = first[R]) {
+      for (var len = min(autoOps._maxLength, str.length - i); len > 0; len -= 1) {
+        var word = str.slice(i, i + len);
+        if (autoOps.hasOwnProperty(word)) {
+          for (var j = 0, letter = first; j < len; j += 1, letter = letter[R]) {
+            letter.italicize(false);
+            var last = letter;
+          }
+
+          var isBuiltIn = BuiltInOpNames.hasOwnProperty(word);
+          first.ctrlSeq = (isBuiltIn ? '\\' : '\\operatorname{') + first.ctrlSeq;
+          last.ctrlSeq += (isBuiltIn ? ' ' : '}');
+          if (TwoWordOpNames.hasOwnProperty(word)) last[L][L][L].jQ.addClass('mq-last');
+          if (nonOperatorSymbol(first[L])) first.jQ.addClass('mq-first');
+          if (nonOperatorSymbol(last[R])) last.jQ.addClass('mq-last');
+
+          i += len - 1;
+          first = last;
+          continue outer;
+        }
+      }
+    }
+  };
+  function nonOperatorSymbol(node) {
+    return node instanceof Symbol && !(node instanceof BinaryOperator);
+  }
+});
+var BuiltInOpNames = {}; // http://latex.wikia.com/wiki/List_of_LaTeX_symbols#Named_operators:_sin.2C_cos.2C_etc.
+  // except for over/under line/arrow \lim variants like \varlimsup
+var TwoWordOpNames = { limsup: 1, liminf: 1, projlim: 1, injlim: 1 };
+(function() {
+  var autoOps = Options.p.autoOperatorNames = { _maxLength: 9 };
+  var mostOps = ('arg deg det dim exp gcd hom inf ker lg lim ln log max min sup'
+                 + ' limsup liminf injlim projlim Pr').split(' ');
+  for (var i = 0; i < mostOps.length; i += 1) {
+    BuiltInOpNames[mostOps[i]] = autoOps[mostOps[i]] = 1;
+  }
+
+  var builtInTrigs = // why coth but not sech and csch, LaTeX?
+    'sin cos tan arcsin arccos arctan sinh cosh tanh sec csc cot coth'.split(' ');
+  for (var i = 0; i < builtInTrigs.length; i += 1) {
+    BuiltInOpNames[builtInTrigs[i]] = 1;
+  }
+
+  var autoTrigs = 'sin cos tan sec cosec csc cotan cot ctg'.split(' ');
+  for (var i = 0; i < autoTrigs.length; i += 1) {
+    autoOps[autoTrigs[i]] =
+    autoOps['arc'+autoTrigs[i]] =
+    autoOps[autoTrigs[i]+'h'] =
+    autoOps['ar'+autoTrigs[i]+'h'] =
+    autoOps['arc'+autoTrigs[i]+'h'] = 1;
+  }
+}());
+optionProcessors.autoOperatorNames = function(cmds) {
+  if (!/^[a-z]+(?: [a-z]+)*$/i.test(cmds)) {
+    throw '"'+cmds+'" not a space-delimited list of only letters';
+  }
+  var list = cmds.split(' '), dict = {}, maxLength = 0;
+  for (var i = 0; i < list.length; i += 1) {
+    var cmd = list[i];
+    if (cmd.length < 2) {
+      throw '"'+cmd+'" not minimum length of 2';
+    }
+    dict[cmd] = 1;
+    maxLength = max(maxLength, cmd.length);
+  }
+  dict._maxLength = maxLength;
+  return dict;
+};
+var OperatorName = P(Symbol, function(_, super_) {
+  _.init = function(fn) { this.ctrlSeq = fn; };
+  _.createLeftOf = function(cursor) {
+    var fn = this.ctrlSeq;
+    for (var i = 0; i < fn.length; i += 1) {
+      Letter(fn.charAt(i)).createLeftOf(cursor);
+    }
+  };
+  _.parser = function() {
+    var fn = this.ctrlSeq;
+    var block = MathBlock();
+    for (var i = 0; i < fn.length; i += 1) {
+      Letter(fn.charAt(i)).adopt(block, block.ends[R], 0);
+    }
+    return Parser.succeed(block.children());
+  };
+});
+for (var fn in BuiltInOpNames) if (BuiltInOpNames.hasOwnProperty(fn)) {
+  LatexCmds[fn] = OperatorName;
+}
+LatexCmds.operatorname = P(MathCommand, function(_) {
+  _.createLeftOf = noop;
+  _.numBlocks = function() { return 1; };
+  _.parser = function() {
+    return latexMathParser.block.map(function(b) { return b.children(); });
+  };
 });
 
+LatexCmds.f = P(Letter, function(_, super_) {
+  _.init = function() {
+    Symbol.p.init.call(this, this.letter = 'f', '<var class="mq-f">f</var>');
+  };
+  _.italicize = function(bool) {
+    this.jQ.html('f').toggleClass('mq-f', bool);
+    return super_.italicize.apply(this, arguments);
+  };
+});
+
+// VanillaSymbol's
+LatexCmds[' '] = LatexCmds.space = bind(VanillaSymbol, '\\ ', '&nbsp;');
+
+LatexCmds["'"] = LatexCmds.prime = bind(VanillaSymbol, "'", '&prime;');
+
+LatexCmds.backslash = bind(VanillaSymbol,'\\backslash ','\\');
+if (!CharCmds['\\']) CharCmds['\\'] = LatexCmds.backslash;
+
+LatexCmds.$ = bind(VanillaSymbol, '\\$', '$');
+
+// does not use Symbola font
+var NonSymbolaSymbol = P(Symbol, function(_, super_) {
+  _.init = function(ch, html) {
+    super_.init.call(this, ch, '<span class="mq-nonSymbola">'+(html || ch)+'</span>');
+  };
+});
+
+LatexCmds['@'] = NonSymbolaSymbol;
+LatexCmds['&'] = bind(NonSymbolaSymbol, '\\&', '&amp;');
+LatexCmds['%'] = bind(NonSymbolaSymbol, '\\%', '%');
+
+//the following are all Greek to me, but this helped a lot: http://www.ams.org/STIX/ion/stixsig03.html
+
+//lowercase Greek letter variables
+LatexCmds.alpha =
+LatexCmds.beta =
+LatexCmds.gamma =
+LatexCmds.delta =
+LatexCmds.zeta =
+LatexCmds.eta =
+LatexCmds.theta =
+LatexCmds.iota =
+LatexCmds.kappa =
+LatexCmds.mu =
+LatexCmds.nu =
+LatexCmds.xi =
+LatexCmds.rho =
+LatexCmds.sigma =
+LatexCmds.tau =
+LatexCmds.chi =
+LatexCmds.psi =
+LatexCmds.omega = P(Variable, function(_, super_) {
+  _.init = function(latex) {
+    super_.init.call(this,'\\'+latex+' ','&'+latex+';');
+  };
+});
+
+//why can't anybody FUCKING agree on these
+LatexCmds.phi = //W3C or Unicode?
+  bind(Variable,'\\phi ','&#981;');
+
+LatexCmds.phiv = //Elsevier and 9573-13
+LatexCmds.varphi = //AMS and LaTeX
+  bind(Variable,'\\varphi ','&phi;');
+
+LatexCmds.epsilon = //W3C or Unicode?
+  bind(Variable,'\\epsilon ','&#1013;');
+
+LatexCmds.epsiv = //Elsevier and 9573-13
+LatexCmds.varepsilon = //AMS and LaTeX
+  bind(Variable,'\\varepsilon ','&epsilon;');
+
+LatexCmds.piv = //W3C/Unicode and Elsevier and 9573-13
+LatexCmds.varpi = //AMS and LaTeX
+  bind(Variable,'\\varpi ','&piv;');
+
+LatexCmds.sigmaf = //W3C/Unicode
+LatexCmds.sigmav = //Elsevier
+LatexCmds.varsigma = //LaTeX
+  bind(Variable,'\\varsigma ','&sigmaf;');
+
+LatexCmds.thetav = //Elsevier and 9573-13
+LatexCmds.vartheta = //AMS and LaTeX
+LatexCmds.thetasym = //W3C/Unicode
+  bind(Variable,'\\vartheta ','&thetasym;');
+
+LatexCmds.upsilon = //AMS and LaTeX and W3C/Unicode
+LatexCmds.upsi = //Elsevier and 9573-13
+  bind(Variable,'\\upsilon ','&upsilon;');
+
+//these aren't even mentioned in the HTML character entity references
+LatexCmds.gammad = //Elsevier
+LatexCmds.Gammad = //9573-13 -- WTF, right? I dunno if this was a typo in the reference (see above)
+LatexCmds.digamma = //LaTeX
+  bind(Variable,'\\digamma ','&#989;');
+
+LatexCmds.kappav = //Elsevier
+LatexCmds.varkappa = //AMS and LaTeX
+  bind(Variable,'\\varkappa ','&#1008;');
+
+LatexCmds.rhov = //Elsevier and 9573-13
+LatexCmds.varrho = //AMS and LaTeX
+  bind(Variable,'\\varrho ','&#1009;');
+
+//Greek constants, look best in non-italicized Times New Roman
+LatexCmds.pi = LatexCmds['π'] = bind(NonSymbolaSymbol,'\\pi ','&pi;');
+LatexCmds.lambda = bind(NonSymbolaSymbol,'\\lambda ','&lambda;');
+
+//uppercase greek letters
+
+LatexCmds.Upsilon = //LaTeX
+LatexCmds.Upsi = //Elsevier and 9573-13
+LatexCmds.upsih = //W3C/Unicode "upsilon with hook"
+LatexCmds.Upsih = //'cos it makes sense to me
+  bind(Symbol,'\\Upsilon ','<var style="font-family: serif">&upsih;</var>'); //Symbola's 'upsilon with a hook' is a capital Y without hooks :(
+
+//other symbols with the same LaTeX command and HTML character entity reference
+LatexCmds.Gamma =
+LatexCmds.Delta =
+LatexCmds.Theta =
+LatexCmds.Lambda =
+LatexCmds.Xi =
+LatexCmds.Pi =
+LatexCmds.Sigma =
+LatexCmds.Phi =
+LatexCmds.Psi =
+LatexCmds.Omega =
+LatexCmds.forall = P(VanillaSymbol, function(_, super_) {
+  _.init = function(latex) {
+    super_.init.call(this,'\\'+latex+' ','&'+latex+';');
+  };
+});
+
+// symbols that aren't a single MathCommand, but are instead a whole
+// Fragment. Creates the Fragment from a LaTeX string
+var LatexFragment = P(MathCommand, function(_) {
+  _.init = function(latex) { this.latex = latex; };
+  _.createLeftOf = function(cursor) {
+    var block = latexMathParser.parse(this.latex);
+    block.children().adopt(cursor.parent, cursor[L], cursor[R]);
+    cursor[L] = block.ends[R];
+    block.jQize().insertBefore(cursor.jQ);
+    block.finalizeInsert(cursor.options, cursor);
+    if (block.ends[R][R].siblingCreated) block.ends[R][R].siblingCreated(cursor.options, L);
+    if (block.ends[L][L].siblingCreated) block.ends[L][L].siblingCreated(cursor.options, R);
+    cursor.parent.bubble('reflow');
+  };
+  _.parser = function() {
+    var frag = latexMathParser.parse(this.latex).children();
+    return Parser.succeed(frag);
+  };
+});
+
+// for what seems to me like [stupid reasons][1], Unicode provides
+// subscripted and superscripted versions of all ten Arabic numerals,
+// as well as [so-called "vulgar fractions"][2].
+// Nobody really cares about most of them, but some of them actually
+// predate Unicode, dating back to [ISO-8859-1][3], apparently also
+// known as "Latin-1", which among other things [Windows-1252][4]
+// largely coincides with, so Microsoft Word sometimes inserts them
+// and they get copy-pasted into MathQuill.
+//
+// (Irrelevant but funny story: Windows-1252 is actually a strict
+// superset of the "closely related but distinct"[3] "ISO 8859-1" --
+// see the lack of a dash after "ISO"? Completely different character
+// set, like elephants vs elephant seals, or "Zombies" vs "Zombie
+// Redneck Torture Family". What kind of idiot would get them confused.
+// People in fact got them confused so much, it was so common to
+// mislabel Windows-1252 text as ISO-8859-1, that most modern web
+// browsers and email clients treat the MIME charset of ISO-8859-1
+// as actually Windows-1252, behavior now standard in the HTML5 spec.)
+//
+// [1]: http://en.wikipedia.org/wiki/Unicode_subscripts_andsuper_scripts
+// [2]: http://en.wikipedia.org/wiki/Number_Forms
+// [3]: http://en.wikipedia.org/wiki/ISO/IEC_8859-1
+// [4]: http://en.wikipedia.org/wiki/Windows-1252
+LatexCmds['¹'] = bind(LatexFragment, '^1');
+LatexCmds['²'] = bind(LatexFragment, '^2');
+LatexCmds['³'] = bind(LatexFragment, '^3');
+LatexCmds['¼'] = bind(LatexFragment, '\\frac14');
+LatexCmds['½'] = bind(LatexFragment, '\\frac12');
+LatexCmds['¾'] = bind(LatexFragment, '\\frac34');
+
+var PlusMinus = P(BinaryOperator, function(_) {
+  _.init = VanillaSymbol.prototype.init;
+
+  _.contactWeld = _.siblingCreated = _.siblingDeleted = function(opts, dir) {
+    if (dir === R) return; // ignore if sibling only changed on the right
+    this.jQ[0].className =
+      (!this[L] || this[L] instanceof BinaryOperator ? '' : 'mq-binary-operator');
+    return this;
+  };
+});
+
+LatexCmds['+'] = bind(PlusMinus, '+', '+');
+//yes, these are different dashes, I think one is an en dash and the other is a hyphen
+LatexCmds['–'] = LatexCmds['-'] = bind(PlusMinus, '-', '&minus;');
+LatexCmds['±'] = LatexCmds.pm = LatexCmds.plusmn = LatexCmds.plusminus =
+  bind(PlusMinus,'\\pm ','&plusmn;');
+LatexCmds.mp = LatexCmds.mnplus = LatexCmds.minusplus =
+  bind(PlusMinus,'\\mp ','&#8723;');
+
+CharCmds['*'] = LatexCmds.sdot = LatexCmds.cdot =
+  bind(BinaryOperator, '\\cdot ', '&middot;');
+//semantically should be &sdot;, but &middot; looks better
+
+var Inequality = P(BinaryOperator, function(_, super_) {
+  _.init = function(data, strict) {
+    this.data = data;
+    this.strict = strict;
+    var strictness = (strict ? 'Strict' : '');
+    super_.init.call(this, data['ctrlSeq'+strictness], data['html'+strictness],
+                     data['text'+strictness]);
+  };
+  _.swap = function(strict) {
+    this.strict = strict;
+    var strictness = (strict ? 'Strict' : '');
+    this.ctrlSeq = this.data['ctrlSeq'+strictness];
+    this.jQ.html(this.data['html'+strictness]);
+    this.textTemplate = [ this.data['text'+strictness] ];
+  };
+  _.deleteTowards = function(dir, cursor) {
+    if (dir === L && !this.strict) {
+      this.swap(true);
+      this.bubble('reflow');
+      return;
+    }
+    super_.deleteTowards.apply(this, arguments);
+  };
+});
+
+var less = { ctrlSeq: '\\le ', html: '&le;', text: '≤',
+             ctrlSeqStrict: '<', htmlStrict: '&lt;', textStrict: '<' };
+var greater = { ctrlSeq: '\\ge ', html: '&ge;', text: '≥',
+                ctrlSeqStrict: '>', htmlStrict: '&gt;', textStrict: '>' };
+
+LatexCmds['<'] = LatexCmds.lt = bind(Inequality, less, true);
+LatexCmds['>'] = LatexCmds.gt = bind(Inequality, greater, true);
+LatexCmds['≤'] = LatexCmds.le = LatexCmds.leq = bind(Inequality, less, false);
+LatexCmds['≥'] = LatexCmds.ge = LatexCmds.geq = bind(Inequality, greater, false);
+
+var Equality = P(BinaryOperator, function(_, super_) {
+  _.init = function() {
+    super_.init.call(this, '=', '=');
+  };
+  _.createLeftOf = function(cursor) {
+    if (cursor[L] instanceof Inequality && cursor[L].strict) {
+      cursor[L].swap(false);
+      cursor[L].bubble('reflow');
+      return;
+    }
+    super_.createLeftOf.apply(this, arguments);
+  };
+});
+LatexCmds['='] = Equality;
+
+LatexCmds.times = bind(BinaryOperator, '\\times ', '&times;', '[x]');
+
+LatexCmds['÷'] = LatexCmds.div = LatexCmds.divide = LatexCmds.divides =
+  bind(BinaryOperator,'\\div ','&divide;', '[/]');
+
+CharCmds['~'] = LatexCmds.sim = bind(BinaryOperator, '\\sim ', '~', '~');
+/***************************
+ * Commands and Operators.
+ **************************/
+
+var scale, // = function(jQ, x, y) { ... }
+//will use a CSS 2D transform to scale the jQuery-wrapped HTML elements,
+//or the filter matrix transform fallback for IE 5.5-8, or gracefully degrade to
+//increasing the fontSize to match the vertical Y scaling factor.
+
+//ideas from http://github.com/louisremi/jquery.transform.js
+//see also http://msdn.microsoft.com/en-us/library/ms533014(v=vs.85).aspx
+
+  forceIERedraw = noop,
+  div = document.createElement('div'),
+  div_style = div.style,
+  transformPropNames = {
+    transform:1,
+    WebkitTransform:1,
+    MozTransform:1,
+    OTransform:1,
+    msTransform:1
+  },
+  transformPropName;
+
+for (var prop in transformPropNames) {
+  if (prop in div_style) {
+    transformPropName = prop;
+    break;
+  }
+}
+
+if (transformPropName) {
+  scale = function(jQ, x, y) {
+    jQ.css(transformPropName, 'scale('+x+','+y+')');
+  };
+}
+else if ('filter' in div_style) { //IE 6, 7, & 8 fallback, see https://github.com/laughinghan/mathquill/wiki/Transforms
+  forceIERedraw = function(el){ el.className = el.className; };
+  scale = function(jQ, x, y) { //NOTE: assumes y > x
+    x /= (1+(y-1)/2);
+    jQ.css('fontSize', y + 'em');
+    if (!jQ.hasClass('mq-matrixed-container')) {
+      jQ.addClass('mq-matrixed-container')
+      .wrapInner('<span class="mq-matrixed"></span>');
+    }
+    var innerjQ = jQ.children()
+    .css('filter', 'progid:DXImageTransform.Microsoft'
+        + '.Matrix(M11=' + x + ",SizingMethod='auto expand')"
+    );
+    function calculateMarginRight() {
+      jQ.css('marginRight', (innerjQ.width()-1)*(x-1)/x + 'px');
+    }
+    calculateMarginRight();
+    var intervalId = setInterval(calculateMarginRight);
+    $(window).load(function() {
+      clearTimeout(intervalId);
+      calculateMarginRight();
+    });
+  };
+}
+else {
+  scale = function(jQ, x, y) {
+    jQ.css('fontSize', y + 'em');
+  };
+}
+
+var Style = P(MathCommand, function(_, super_) {
+  _.init = function(ctrlSeq, tagName, attrs) {
+    super_.init.call(this, ctrlSeq, '<'+tagName+' '+attrs+'>&0</'+tagName+'>');
+  };
+});
+
+//fonts
+LatexCmds.mathrm = bind(Style, '\\mathrm', 'span', 'class="mq-roman mq-font"');
+LatexCmds.mathit = bind(Style, '\\mathit', 'i', 'class="mq-font"');
+LatexCmds.mathbf = bind(Style, '\\mathbf', 'b', 'class="mq-font"');
+LatexCmds.mathsf = bind(Style, '\\mathsf', 'span', 'class="mq-sans-serif mq-font"');
+LatexCmds.mathtt = bind(Style, '\\mathtt', 'span', 'class="mq-monospace mq-font"');
+//text-decoration
+LatexCmds.underline = bind(Style, '\\underline', 'span', 'class="mq-non-leaf mq-underline"');
+LatexCmds.overline = LatexCmds.bar = bind(Style, '\\overline', 'span', 'class="mq-non-leaf mq-overline"');
+
+// `\textcolor{color}{math}` will apply a color to the given math content, where
+// `color` is any valid CSS Color Value (see [SitePoint docs][] (recommended),
+// [Mozilla docs][], or [W3C spec][]).
+//
+// [SitePoint docs]: http://reference.sitepoint.com/css/colorvalues
+// [Mozilla docs]: https://developer.mozilla.org/en-US/docs/CSS/color_value#Values
+// [W3C spec]: http://dev.w3.org/csswg/css3-color/#colorunits
+var TextColor = LatexCmds.textcolor = P(MathCommand, function(_, super_) {
+  _.setColor = function(color) {
+    this.color = color;
+    this.htmlTemplate =
+      '<span class="mq-textcolor" style="color:' + color + '">&0</span>';
+  };
+  _.latex = function() {
+    return '\\textcolor{' + this.color + '}{' + this.blocks[0].latex() + '}';
+  };
+  _.parser = function() {
+    var self = this;
+    var optWhitespace = Parser.optWhitespace;
+    var string = Parser.string;
+    var regex = Parser.regex;
+
+    return optWhitespace
+      .then(string('{'))
+      .then(regex(/^[#\w\s.,()%-]*/))
+      .skip(string('}'))
+      .then(function(color) {
+        self.setColor(color);
+        return super_.parser.call(self);
+      })
+    ;
+  };
+});
+
+// Very similar to the \textcolor command, but will add the given CSS class.
+// Usage: \class{classname}{math}
+// Note regex that whitelists valid CSS classname characters:
+// https://github.com/mathquill/mathquill/pull/191#discussion_r4327442
+var Class = LatexCmds['class'] = P(MathCommand, function(_, super_) {
+  _.parser = function() {
+    var self = this, string = Parser.string, regex = Parser.regex;
+    return Parser.optWhitespace
+      .then(string('{'))
+      .then(regex(/^[-\w\s\\\xA0-\xFF]*/))
+      .skip(string('}'))
+      .then(function(cls) {
+        self.htmlTemplate = '<span class="mq-class '+cls+'">&0</span>';
+        return super_.parser.call(self);
+      })
+    ;
+  };
+});
+
+var SupSub = P(MathCommand, function(_, super_) {
+  _.ctrlSeq = '_{...}^{...}';
+  _.createLeftOf = function(cursor) {
+    if (!cursor[L] && cursor.options.supSubsRequireOperand) return;
+    return super_.createLeftOf.apply(this, arguments);
+  };
+  _.contactWeld = function(cursor) {
+    // Look on either side for a SupSub, if one is found compare my
+    // .sub, .sup with its .sub, .sup. If I have one that it doesn't,
+    // then call .addBlock() on it with my block; if I have one that
+    // it also has, then insert my block's children into its block,
+    // unless my block has none, in which case insert the cursor into
+    // its block (and not mine, I'm about to remove myself) in the case
+    // I was just typed.
+    // TODO: simplify
+
+    // equiv. to [L, R].forEach(function(dir) { ... });
+    for (var dir = L; dir; dir = (dir === L ? R : false)) {
+      if (this[dir] instanceof SupSub) {
+        // equiv. to 'sub sup'.split(' ').forEach(function(supsub) { ... });
+        for (var supsub = 'sub'; supsub; supsub = (supsub === 'sub' ? 'sup' : false)) {
+          var src = this[supsub], dest = this[dir][supsub];
+          if (!src) continue;
+          if (!dest) this[dir].addBlock(src.disown());
+          else if (!src.isEmpty()) { // ins src children at -dir end of dest
+            src.jQ.children().insAtDirEnd(-dir, dest.jQ);
+            var children = src.children().disown();
+            var pt = Point(dest, children.ends[R], dest.ends[L]);
+            if (dir === L) children.adopt(dest, dest.ends[R], 0);
+            else children.adopt(dest, 0, dest.ends[L]);
+          }
+          else var pt = Point(dest, 0, dest.ends[L]);
+          this.placeCursor = (function(dest, src) { // TODO: don't monkey-patch
+            return function(cursor) { cursor.insAtDirEnd(-dir, dest || src); };
+          }(dest, src));
+        }
+        this.remove();
+        if (cursor && cursor[L] === this) {
+          if (dir === R && pt) {
+            pt[L] ? cursor.insRightOf(pt[L]) : cursor.insAtLeftEnd(pt.parent);
+          }
+          else cursor.insRightOf(this[dir]);
+        }
+        break;
+      }
+    }
+    this.respace();
+  };
+  Options.p.charsThatBreakOutOfSupSub = '';
+  _.finalizeTree = function() {
+    this.ends[L].write = function(cursor, ch) {
+      if (cursor.options.autoSubscriptNumerals && this === this.parent.sub) {
+        if (ch === '_') return;
+        var cmd = this.chToCmd(ch);
+        if (cmd instanceof Symbol) cursor.deleteSelection();
+        else cursor.clearSelection().insRightOf(this.parent);
+        return cmd.createLeftOf(cursor.show());
+      }
+      if (cursor[L] && !cursor[R] && !cursor.selection
+          && cursor.options.charsThatBreakOutOfSupSub.indexOf(ch) > -1) {
+        cursor.insRightOf(this.parent);
+      }
+      MathBlock.p.write.apply(this, arguments);
+    };
+  };
+  _.moveTowards = function(dir, cursor, updown) {
+    if (cursor.options.autoSubscriptNumerals && !this.sup) {
+      cursor.insDirOf(dir, this);
+    }
+    else super_.moveTowards.apply(this, arguments);
+  };
+  _.deleteTowards = function(dir, cursor) {
+    if (cursor.options.autoSubscriptNumerals && this.sub) {
+      var cmd = this.sub.ends[-dir];
+      if (cmd instanceof Symbol) cmd.remove();
+      else if (cmd) cmd.deleteTowards(dir, cursor.insAtDirEnd(-dir, this.sub));
+
+      // TODO: factor out a .removeBlock() or something
+      if (this.sub.isEmpty()) {
+        this.sub.deleteOutOf(L, cursor.insAtLeftEnd(this.sub));
+        if (this.sup) cursor.insDirOf(-dir, this);
+        // Note `-dir` because in e.g. x_1^2| want backspacing (leftward)
+        // to delete the 1 but to end up rightward of x^2; with non-negated
+        // `dir` (try it), the cursor appears to have gone "through" the ^2.
+      }
+    }
+    else super_.deleteTowards.apply(this, arguments);
+  };
+  _.latex = function() {
+    function latex(prefix, block) {
+      var l = block && block.latex();
+      return block ? prefix + (l.length === 1 ? l : '{' + (l || ' ') + '}') : '';
+    }
+    return latex('_', this.sub) + latex('^', this.sup);
+  };
+  _.respace = _.siblingCreated = _.siblingDeleted = function(opts, dir) {
+    if (dir === R) return; // ignore if sibling only changed on the right
+    this.jQ.toggleClass('mq-limit', this[L].ctrlSeq === '\\int ');
+  };
+  _.addBlock = function(block) {
+    if (this.supsub === 'sub') {
+      this.sup = this.upInto = this.sub.upOutOf = block;
+      block.adopt(this, this.sub, 0).downOutOf = this.sub;
+      block.jQ = $('<span class="mq-sup"/>').append(block.jQ.children())
+        .attr(mqBlockId, block.id).prependTo(this.jQ);
+    }
+    else {
+      this.sub = this.downInto = this.sup.downOutOf = block;
+      block.adopt(this, 0, this.sup).upOutOf = this.sup;
+      block.jQ = $('<span class="mq-sub"></span>').append(block.jQ.children())
+        .attr(mqBlockId, block.id).appendTo(this.jQ.removeClass('mq-sup-only'));
+      this.jQ.append('<span style="display:inline-block;width:0">&#8203;</span>');
+    }
+    // like 'sub sup'.split(' ').forEach(function(supsub) { ... });
+    for (var i = 0; i < 2; i += 1) (function(cmd, supsub, oppositeSupsub, updown) {
+      cmd[supsub].deleteOutOf = function(dir, cursor) {
+        cursor.insDirOf((this[dir] ? -dir : dir), this.parent);
+        if (!this.isEmpty()) {
+          var end = this.ends[dir];
+          this.children().disown()
+            .withDirAdopt(dir, cursor.parent, cursor[dir], cursor[-dir])
+            .jQ.insDirOf(-dir, cursor.jQ);
+          cursor[-dir] = end;
+        }
+        cmd.supsub = oppositeSupsub;
+        delete cmd[supsub];
+        delete cmd[updown+'Into'];
+        cmd[oppositeSupsub][updown+'OutOf'] = insLeftOfMeUnlessAtEnd;
+        delete cmd[oppositeSupsub].deleteOutOf;
+        if (supsub === 'sub') $(cmd.jQ.addClass('mq-sup-only')[0].lastChild).remove();
+        this.remove();
+      };
+    }(this, 'sub sup'.split(' ')[i], 'sup sub'.split(' ')[i], 'down up'.split(' ')[i]));
+  };
+});
+
+function insLeftOfMeUnlessAtEnd(cursor) {
+  // cursor.insLeftOf(cmd), unless cursor at the end of block, and every
+  // ancestor cmd is at the end of every ancestor block
+  var cmd = this.parent, ancestorCmd = cursor;
+  do {
+    if (ancestorCmd[R]) return cursor.insLeftOf(cmd);
+    ancestorCmd = ancestorCmd.parent.parent;
+  } while (ancestorCmd !== cmd);
+  cursor.insRightOf(cmd);
+}
+
+LatexCmds.subscript =
+LatexCmds._ = P(SupSub, function(_, super_) {
+  _.supsub = 'sub';
+  _.htmlTemplate =
+      '<span class="mq-supsub mq-non-leaf">'
+    +   '<span class="mq-sub">&0</span>'
+    +   '<span style="display:inline-block;width:0">&#8203;</span>'
+    + '</span>'
+  ;
+  _.textTemplate = [ '_' ];
+  _.finalizeTree = function() {
+    this.downInto = this.sub = this.ends[L];
+    this.sub.upOutOf = insLeftOfMeUnlessAtEnd;
+    super_.finalizeTree.call(this);
+  };
+});
+
+LatexCmds.superscript =
+LatexCmds.supscript =
+LatexCmds['^'] = P(SupSub, function(_, super_) {
+  _.supsub = 'sup';
+  _.htmlTemplate =
+      '<span class="mq-supsub mq-non-leaf mq-sup-only">'
+    +   '<span class="mq-sup">&0</span>'
+    + '</span>'
+  ;
+  _.textTemplate = [ '**' ];
+  _.finalizeTree = function() {
+    this.upInto = this.sup = this.ends[R];
+    this.sup.downOutOf = insLeftOfMeUnlessAtEnd;
+    super_.finalizeTree.call(this);
+  };
+});
+
+var SummationNotation = P(MathCommand, function(_, super_) {
+  _.init = function(ch, html) {
+    var htmlTemplate =
+      '<span class="mq-large-operator mq-non-leaf">'
+    +   '<span class="mq-to"><span>&1</span></span>'
+    +   '<big>'+html+'</big>'
+    +   '<span class="mq-from"><span>&0</span></span>'
+    + '</span>'
+    ;
+    Symbol.prototype.init.call(this, ch, htmlTemplate);
+  };
+  _.createLeftOf = function(cursor) {
+    super_.createLeftOf.apply(this, arguments);
+    if (cursor.options.sumStartsWithNEquals) {
+      Letter('n').createLeftOf(cursor);
+      Equality().createLeftOf(cursor);
+    }
+  };
+  _.latex = function() {
+    function simplify(latex) {
+      return latex.length === 1 ? latex : '{' + (latex || ' ') + '}';
+    }
+    return this.ctrlSeq + '_' + simplify(this.ends[L].latex()) +
+      '^' + simplify(this.ends[R].latex());
+  };
+  _.parser = function() {
+    var string = Parser.string;
+    var optWhitespace = Parser.optWhitespace;
+    var succeed = Parser.succeed;
+    var block = latexMathParser.block;
+
+    var self = this;
+    var blocks = self.blocks = [ MathBlock(), MathBlock() ];
+    for (var i = 0; i < blocks.length; i += 1) {
+      blocks[i].adopt(self, self.ends[R], 0);
+    }
+
+    return optWhitespace.then(string('_').or(string('^'))).then(function(supOrSub) {
+      var child = blocks[supOrSub === '_' ? 0 : 1];
+      return block.then(function(block) {
+        block.children().adopt(child, child.ends[R], 0);
+        return succeed(self);
+      });
+    }).many().result(self);
+  };
+  _.finalizeTree = function() {
+    this.downInto = this.ends[L];
+    this.upInto = this.ends[R];
+    this.ends[L].upOutOf = this.ends[R];
+    this.ends[R].downOutOf = this.ends[L];
+  };
+});
+
+LatexCmds['∑'] =
+LatexCmds.sum =
+LatexCmds.summation = bind(SummationNotation,'\\sum ','&sum;');
+
+LatexCmds['∏'] =
+LatexCmds.prod =
+LatexCmds.product = bind(SummationNotation,'\\prod ','&prod;');
+
+LatexCmds.coprod =
+LatexCmds.coproduct = bind(SummationNotation,'\\coprod ','&#8720;');
+
+var Fraction =
+LatexCmds.frac =
+LatexCmds.dfrac =
+LatexCmds.cfrac =
+LatexCmds.fraction = P(MathCommand, function(_, super_) {
+  _.ctrlSeq = '\\frac';
+  _.htmlTemplate =
+      '<span class="mq-fraction mq-non-leaf">'
+    +   '<span class="mq-numerator">&0</span>'
+    +   '<span class="mq-denominator">&1</span>'
+    +   '<span style="display:inline-block;width:0">&#8203;</span>'
+    + '</span>'
+  ;
+  _.textTemplate = ['(', '/', ')'];
+  _.finalizeTree = function() {
+    this.upInto = this.ends[R].upOutOf = this.ends[L];
+    this.downInto = this.ends[L].downOutOf = this.ends[R];
+  };
+});
+
+var LiveFraction =
+LatexCmds.over =
+CharCmds['/'] = P(Fraction, function(_, super_) {
+  _.createLeftOf = function(cursor) {
+    if (!this.replacedFragment) {
+      var leftward = cursor[L];
+      while (leftward &&
+        !(
+          leftward instanceof BinaryOperator ||
+          leftward instanceof (LatexCmds.text || noop) ||
+          leftward instanceof SummationNotation ||
+          leftward.ctrlSeq === '\\ ' ||
+          /^[,;:]$/.test(leftward.ctrlSeq)
+        ) //lookbehind for operator
+      ) leftward = leftward[L];
+
+      if (leftward instanceof SummationNotation && leftward[R] instanceof SupSub) {
+        leftward = leftward[R];
+        if (leftward[R] instanceof SupSub && leftward[R].ctrlSeq != leftward.ctrlSeq)
+          leftward = leftward[R];
+      }
+
+      if (leftward !== cursor[L]) {
+        this.replaces(Fragment(leftward[R] || cursor.parent.ends[L], cursor[L]));
+        cursor[L] = leftward;
+      }
+    }
+    super_.createLeftOf.call(this, cursor);
+  };
+});
+
+var SquareRoot =
+LatexCmds.sqrt =
+LatexCmds['√'] = P(MathCommand, function(_, super_) {
+  _.ctrlSeq = '\\sqrt';
+  _.htmlTemplate =
+      '<span class="mq-non-leaf">'
+    +   '<span class="mq-scaled mq-sqrt-prefix">&radic;</span>'
+    +   '<span class="mq-non-leaf mq-sqrt-stem">&0</span>'
+    + '</span>'
+  ;
+  _.textTemplate = ['sqrt(', ')'];
+  _.parser = function() {
+    return latexMathParser.optBlock.then(function(optBlock) {
+      return latexMathParser.block.map(function(block) {
+        var nthroot = NthRoot();
+        nthroot.blocks = [ optBlock, block ];
+        optBlock.adopt(nthroot, 0, 0);
+        block.adopt(nthroot, optBlock, 0);
+        return nthroot;
+      });
+    }).or(super_.parser.call(this));
+  };
+  _.reflow = function() {
+    var block = this.ends[R].jQ;
+    scale(block.prev(), 1, block.innerHeight()/+block.css('fontSize').slice(0,-2) - .1);
+  };
+});
+
+var Vec = LatexCmds.vec = P(MathCommand, function(_, super_) {
+  _.ctrlSeq = '\\vec';
+  _.htmlTemplate =
+      '<span class="mq-non-leaf">'
+    +   '<span class="mq-vector-prefix">&rarr;</span>'
+    +   '<span class="mq-vector-stem">&0</span>'
+    + '</span>'
+  ;
+  _.textTemplate = ['vec(', ')'];
+});
+
+var NthRoot =
+LatexCmds.nthroot = P(SquareRoot, function(_, super_) {
+  _.htmlTemplate =
+      '<sup class="mq-nthroot mq-non-leaf">&0</sup>'
+    + '<span class="mq-scaled">'
+    +   '<span class="mq-sqrt-prefix mq-scaled">&radic;</span>'
+    +   '<span class="mq-sqrt-stem mq-non-leaf">&1</span>'
+    + '</span>'
+  ;
+  _.textTemplate = ['sqrt[', '](', ')'];
+  _.latex = function() {
+    return '\\sqrt['+this.ends[L].latex()+']{'+this.ends[R].latex()+'}';
+  };
+});
+
+function DelimsMixin(_, super_) {
+  _.jQadd = function() {
+    super_.jQadd.apply(this, arguments);
+    this.delimjQs = this.jQ.children(':first').add(this.jQ.children(':last'));
+    this.contentjQ = this.jQ.children(':eq(1)');
+  };
+  _.reflow = function() {
+    var height = this.contentjQ.outerHeight()
+                 / parseFloat(this.contentjQ.css('fontSize'));
+    scale(this.delimjQs, min(1 + .2*(height - 1), 1.2), 1.2*height);
+  };
+}
+
+// Round/Square/Curly/Angle Brackets (aka Parens/Brackets/Braces)
+//   first typed as one-sided bracket with matching "ghost" bracket at
+//   far end of current block, until you type an opposing one
+var Bracket = P(P(MathCommand, DelimsMixin), function(_, super_) {
+  _.init = function(side, open, close, ctrlSeq, end) {
+    super_.init.call(this, '\\left'+ctrlSeq, undefined, [open, close]);
+    this.side = side;
+    this.sides = {};
+    this.sides[L] = { ch: open, ctrlSeq: ctrlSeq };
+    this.sides[R] = { ch: close, ctrlSeq: end };
+  };
+  _.numBlocks = function() { return 1; };
+  _.html = function() { // wait until now so that .side may
+    this.htmlTemplate = // be set by createLeftOf or parser
+        '<span class="mq-non-leaf">'
+      +   '<span class="mq-scaled mq-paren'+(this.side === R ? ' mq-ghost' : '')+'">'
+      +     this.sides[L].ch
+      +   '</span>'
+      +   '<span class="mq-non-leaf">&0</span>'
+      +   '<span class="mq-scaled mq-paren'+(this.side === L ? ' mq-ghost' : '')+'">'
+      +     this.sides[R].ch
+      +   '</span>'
+      + '</span>'
+    ;
+    return super_.html.call(this);
+  };
+  _.latex = function() {
+    return '\\left'+this.sides[L].ctrlSeq+this.ends[L].latex()+'\\right'+this.sides[R].ctrlSeq;
+  };
+  _.oppBrack = function(opts, node, expectedSide) {
+    // return node iff it's a 1-sided bracket of expected side (if any, may be
+    // undefined), and of opposite side from me if I'm not a pipe
+    return node instanceof Bracket && node.side && node.side !== -expectedSide
+      && (this.sides[this.side].ch === '|' || node.side === -this.side)
+      && (!opts.restrictMismatchedBrackets
+        || OPP_BRACKS[this.sides[this.side].ch] === node.sides[node.side].ch
+        || { '(': ']', '[': ')' }[this.sides[L].ch] === node.sides[R].ch) && node;
+  };
+  _.closeOpposing = function(brack) {
+    brack.side = 0;
+    brack.sides[this.side] = this.sides[this.side]; // copy over my info (may be
+    brack.delimjQs.eq(this.side === L ? 0 : 1) // mismatched, like [a, b))
+      .removeClass('mq-ghost').html(this.sides[this.side].ch);
+  };
+  _.createLeftOf = function(cursor) {
+    if (!this.replacedFragment) { // unless wrapping seln in brackets,
+        // check if next to or inside an opposing one-sided bracket
+        // (must check both sides 'cos I might be a pipe)
+      var opts = cursor.options;
+      var brack = this.oppBrack(opts, cursor[L], L)
+                  || this.oppBrack(opts, cursor[R], R)
+                  || this.oppBrack(opts, cursor.parent.parent);
+    }
+    if (brack) {
+      var side = this.side = -brack.side; // may be pipe with .side not yet set
+      this.closeOpposing(brack);
+      if (brack === cursor.parent.parent && cursor[side]) { // move the stuff between
+        Fragment(cursor[side], cursor.parent.ends[side], -side) // me and ghost outside
+          .disown().withDirAdopt(-side, brack.parent, brack, brack[side])
+          .jQ.insDirOf(side, brack.jQ);
+        brack.bubble('reflow');
+      }
+    }
+    else {
+      brack = this, side = brack.side;
+      if (brack.replacedFragment) brack.side = 0; // wrapping seln, don't be one-sided
+      else if (cursor[-side]) { // elsewise, auto-expand so ghost is at far end
+        brack.replaces(Fragment(cursor[-side], cursor.parent.ends[-side], side));
+        cursor[-side] = 0;
+      }
+      super_.createLeftOf.call(brack, cursor);
+    }
+    if (side === L) cursor.insAtLeftEnd(brack.ends[L]);
+    else cursor.insRightOf(brack);
+  };
+  _.placeCursor = noop;
+  _.unwrap = function() {
+    this.ends[L].children().disown().adopt(this.parent, this, this[R])
+      .jQ.insertAfter(this.jQ);
+    this.remove();
+  };
+  _.deleteSide = function(side, outward, cursor) {
+    var parent = this.parent, sib = this[side], farEnd = parent.ends[side];
+
+    if (side === this.side) { // deleting non-ghost of one-sided bracket, unwrap
+      this.unwrap();
+      sib ? cursor.insDirOf(-side, sib) : cursor.insAtDirEnd(side, parent);
+      return;
+    }
+
+    var opts = cursor.options, wasSolid = !this.side;
+    this.side = -side;
+    // if deleting like, outer close-brace of [(1+2)+3} where inner open-paren
+    if (this.oppBrack(opts, this.ends[L].ends[this.side], side)) { // is ghost,
+      this.closeOpposing(this.ends[L].ends[this.side]); // then become [1+2)+3
+      var origEnd = this.ends[L].ends[side];
+      this.unwrap();
+      if (origEnd.siblingCreated) origEnd.siblingCreated(cursor.options, side);
+      sib ? cursor.insDirOf(-side, sib) : cursor.insAtDirEnd(side, parent);
+    }
+    else { // if deleting like, inner close-brace of ([1+2}+3) where outer
+      if (this.oppBrack(opts, this.parent.parent, side)) { // open-paren is
+        this.parent.parent.closeOpposing(this); // ghost, then become [1+2+3)
+        this.parent.parent.unwrap();
+      } // else if deleting outward from a solid pair, unwrap
+      else if (outward && wasSolid) {
+        this.unwrap();
+        sib ? cursor.insDirOf(-side, sib) : cursor.insAtDirEnd(side, parent);
+        return;
+      }
+      else { // else deleting just one of a pair of brackets, become one-sided
+        this.sides[side] = { ch: OPP_BRACKS[this.sides[this.side].ch],
+                             ctrlSeq: OPP_BRACKS[this.sides[this.side].ctrlSeq] };
+        this.delimjQs.removeClass('mq-ghost')
+          .eq(side === L ? 0 : 1).addClass('mq-ghost').html(this.sides[side].ch);
+      }
+      if (sib) { // auto-expand so ghost is at far end
+        var origEnd = this.ends[L].ends[side];
+        Fragment(sib, farEnd, -side).disown()
+          .withDirAdopt(-side, this.ends[L], origEnd, 0)
+          .jQ.insAtDirEnd(side, this.ends[L].jQ.removeClass('mq-empty'));
+        if (origEnd.siblingCreated) origEnd.siblingCreated(cursor.options, side);
+        cursor.insDirOf(-side, sib);
+      } // didn't auto-expand, cursor goes just outside or just inside parens
+      else (outward ? cursor.insDirOf(side, this)
+                    : cursor.insAtDirEnd(side, this.ends[L]));
+    }
+  };
+  _.deleteTowards = function(dir, cursor) {
+    this.deleteSide(-dir, false, cursor);
+  };
+  _.finalizeTree = function() {
+    this.ends[L].deleteOutOf = function(dir, cursor) {
+      this.parent.deleteSide(dir, true, cursor);
+    };
+    // FIXME HACK: after initial creation/insertion, finalizeTree would only be
+    // called if the paren is selected and replaced, e.g. by LiveFraction
+    this.finalizeTree = this.intentionalBlur = function() {
+      this.delimjQs.eq(this.side === L ? 1 : 0).removeClass('mq-ghost');
+      this.side = 0;
+    };
+  };
+  _.siblingCreated = function(opts, dir) { // if something typed between ghost and far
+    if (dir === -this.side) this.finalizeTree(); // end of its block, solidify
+  };
+});
+
+var OPP_BRACKS = {
+  '(': ')',
+  ')': '(',
+  '[': ']',
+  ']': '[',
+  '{': '}',
+  '}': '{',
+  '\\{': '\\}',
+  '\\}': '\\{',
+  '&lang;': '&rang;',
+  '&rang;': '&lang;',
+  '\\langle ': '\\rangle ',
+  '\\rangle ': '\\langle ',
+  '|': '|'
+};
+
+function bindCharBracketPair(open, ctrlSeq) {
+  var ctrlSeq = ctrlSeq || open, close = OPP_BRACKS[open], end = OPP_BRACKS[ctrlSeq];
+  CharCmds[open] = bind(Bracket, L, open, close, ctrlSeq, end);
+  CharCmds[close] = bind(Bracket, R, open, close, ctrlSeq, end);
+}
+bindCharBracketPair('(');
+bindCharBracketPair('[');
+bindCharBracketPair('{', '\\{');
+LatexCmds.langle = bind(Bracket, L, '&lang;', '&rang;', '\\langle ', '\\rangle ');
+LatexCmds.rangle = bind(Bracket, R, '&lang;', '&rang;', '\\langle ', '\\rangle ');
+CharCmds['|'] = bind(Bracket, L, '|', '|', '|', '|');
+
+LatexCmds.left = P(MathCommand, function(_) {
+  _.parser = function() {
+    var regex = Parser.regex;
+    var string = Parser.string;
+    var succeed = Parser.succeed;
+    var optWhitespace = Parser.optWhitespace;
+
+    return optWhitespace.then(regex(/^(?:[([|]|\\\{)/))
+      .then(function(ctrlSeq) { // TODO: \langle, \rangle
+        var open = (ctrlSeq.charAt(0) === '\\' ? ctrlSeq.slice(1) : ctrlSeq);
+        return latexMathParser.then(function (block) {
+          return string('\\right').skip(optWhitespace)
+            .then(regex(/^(?:[\])|]|\\\})/)).map(function(end) {
+              var close = (end.charAt(0) === '\\' ? end.slice(1) : end);
+              var cmd = Bracket(0, open, close, ctrlSeq, end);
+              cmd.blocks = [ block ];
+              block.adopt(cmd, 0, 0);
+              return cmd;
+            })
+          ;
+        });
+      })
+    ;
+  };
+});
+
+LatexCmds.right = P(MathCommand, function(_) {
+  _.parser = function() {
+    return Parser.fail('unmatched \\right');
+  };
+});
+
+var Binomial =
+LatexCmds.binom =
+LatexCmds.binomial = P(P(MathCommand, DelimsMixin), function(_, super_) {
+  _.ctrlSeq = '\\binom';
+  _.htmlTemplate =
+      '<span class="mq-non-leaf">'
+    +   '<span class="mq-paren mq-scaled">(</span>'
+    +   '<span class="mq-non-leaf">'
+    +     '<span class="mq-array mq-non-leaf">'
+    +       '<span>&0</span>'
+    +       '<span>&1</span>'
+    +     '</span>'
+    +   '</span>'
+    +   '<span class="mq-paren mq-scaled">)</span>'
+    + '</span>'
+  ;
+  _.textTemplate = ['choose(',',',')'];
+});
+
+var Choose =
+LatexCmds.choose = P(Binomial, function(_) {
+  _.createLeftOf = LiveFraction.prototype.createLeftOf;
+});
+
+LatexCmds.MathQuillMathField = P(MathCommand, function(_, super_) {
+  _.ctrlSeq = '\\MathQuillMathField';
+  _.htmlTemplate =
+      '<span class="mq-editable-field">'
+    +   '<span class="mq-root-block">&0</span>'
+    + '</span>'
+  ;
+  _.parser = function() {
+    var self = this,
+      string = Parser.string, regex = Parser.regex, succeed = Parser.succeed;
+    return string('[').then(regex(/^[a-z][a-z0-9]*/i)).skip(string(']'))
+      .map(function(name) { self.name = name; }).or(succeed())
+      .then(super_.parser.call(self));
+  };
+  _.finalizeTree = function() {
+    var ctrlr = Controller(this.ends[L], this.jQ, Options());
+    ctrlr.KIND_OF_MQ = 'MathField';
+    ctrlr.editable = true;
+    ctrlr.createTextarea();
+    ctrlr.editablesTextareaEvents();
+    ctrlr.cursor.insAtRightEnd(ctrlr.root);
+    RootBlockMixin(ctrlr.root);
+  };
+  _.registerInnerField = function(innerFields, MathField) {
+    innerFields.push(innerFields[this.name] = MathField(this.ends[L].controller));
+  };
+  _.latex = function(){ return this.ends[L].latex(); };
+  _.text = function(){ return this.ends[L].text(); };
+});
+suite('SupSub', function() {
+  var mq;
+  setup(function() {
+    mq = MQ.MathField($('<span></span>').appendTo('#mock')[0]);
+  });
+  teardown(function() {
+    $(mq.el()).remove();
+  });
+
+  function prayWellFormedPoint(pt) { prayWellFormed(pt.parent, pt[L], pt[R]); }
+
+  var expecteds = [
+    'x_{ab} x_{ba}, x_a^b x_a^b; x_{ab} x_{ba}, x_a^b x_a^b; x_a x_a, x_a^{} x_a^{}',
+    'x_b^a x_b^a, x^{ab} x^{ba}; x_b^a x_b^a, x^{ab} x^{ba}; x_{}^a x_{}^a, x^a x^a'
+  ];
+  var expectedsAfterC = [
+    'x_{abc} x_{bca}, x_a^{bc} x_a^{bc}; x_{ab}c x_{bca}, x_a^bc x_a^bc; x_ac x_{ca}, x_a^{}c x_a^{}c',
+    'x_{bc}^a x_{bc}^a, x^{abc} x^{bca}; x_b^ac x_b^ac, x^{ab}c x^{bca}; x_{}^ac x_{}^ac, x^ac x^{ca}'
+  ];
+  'sub super'.split(' ').forEach(function(initSupsub, i) {
+    var initialLatex = 'x_a x^a'.split(' ')[i];
+
+    'typed, wrote, wrote empty'.split(', ').forEach(function(did, j) {
+      var doTo = [
+        function(mq, supsub) { mq.typedText(supsub).typedText('b'); },
+        function(mq, supsub) { mq.write(supsub+'b'); },
+        function(mq, supsub) { mq.write(supsub+'{}'); }
+      ][j];
+
+      'sub super'.split(' ').forEach(function(supsub, k) {
+        var cmd = '_^'.split('')[k];
+
+        'after before'.split(' ').forEach(function(side, l) {
+          var moveToSide = [
+            noop,
+            function(mq) { mq.moveToLeftEnd().keystroke('Right'); }
+          ][l];
+
+          var expected = expecteds[i].split('; ')[j].split(', ')[k].split(' ')[l];
+          var expectedAfterC = expectedsAfterC[i].split('; ')[j].split(', ')[k].split(' ')[l];
+
+          test('initial '+initSupsub+'script then '+did+' '+supsub+'script '+side, function() {
+            mq.latex(initialLatex);
+            assert.equal(mq.latex(), initialLatex);
+
+            moveToSide(mq);
+
+            doTo(mq, cmd);
+            assert.equal(mq.latex().replace(/ /g, ''), expected);
+
+            prayWellFormedPoint(mq.__controller.cursor);
+
+            mq.typedText('c');
+            assert.equal(mq.latex().replace(/ /g, ''), expectedAfterC);
+          });
+        });
+      });
+    });
+  });
+
+  var expecteds = 'x_a^3 x_a^3, x_a^3 x_a^3; x^{a3} x^{3a}, x^{a3} x^{3a}';
+  var expectedsAfterC = 'x_a^3c x_a^3c, x_a^3c x_a^3c; x^{a3}c x^{3ca}, x^{a3}c x^{3ca}';
+  'sub super'.split(' ').forEach(function(initSupsub, i) {
+    var initialLatex = 'x_a x^a'.split(' ')[i];
+
+    'typed wrote'.split(' ').forEach(function(did, j) {
+      var doTo = [
+        function(mq) { mq.typedText('³'); },
+        function(mq) { mq.write('³'); }
+      ][j];
+
+      'after before'.split(' ').forEach(function(side, k) {
+        var moveToSide = [
+          noop,
+          function(mq) { mq.moveToLeftEnd().keystroke('Right'); }
+        ][k];
+
+        var expected = expecteds.split('; ')[i].split(', ')[j].split(' ')[k];
+        var expectedAfterC = expectedsAfterC.split('; ')[i].split(', ')[j].split(' ')[k];
+
+        test('initial '+initSupsub+'script then '+did+' \'³\' '+side, function() {
+          mq.latex(initialLatex);
+          assert.equal(mq.latex(), initialLatex);
+
+          moveToSide(mq);
+
+          doTo(mq);
+          assert.equal(mq.latex().replace(/ /g, ''), expected);
+
+          prayWellFormedPoint(mq.__controller.cursor);
+
+          mq.typedText('c');
+          assert.equal(mq.latex().replace(/ /g, ''), expectedAfterC);
+        });
+      });
+    });
+  });
+
+  test('render LaTeX with 2 SupSub\'s in a row', function() {
+    mq.latex('x_a_b');
+    assert.equal(mq.latex(), 'x_{ab}');
+
+    mq.latex('x_a_{}');
+    assert.equal(mq.latex(), 'x_a');
+
+    mq.latex('x_{}_a');
+    assert.equal(mq.latex(), 'x_a');
+
+    mq.latex('x^a^b');
+    assert.equal(mq.latex(), 'x^{ab}');
+
+    mq.latex('x^a^{}');
+    assert.equal(mq.latex(), 'x^a');
+
+    mq.latex('x^{}^a');
+    assert.equal(mq.latex(), 'x^a');
+  });
+
+  test('render LaTeX with 3 alternating SupSub\'s in a row', function() {
+    mq.latex('x_a^b_c');
+    assert.equal(mq.latex(), 'x_{ac}^b');
+
+    mq.latex('x^a_b^c');
+    assert.equal(mq.latex(), 'x_b^{ac}');
+  });
+
+  suite('deleting', function() {
+    test('backspacing out of and then re-typing subscript', function() {
+      mq.latex('x_a^b');
+      assert.equal(mq.latex(), 'x_a^b');
+
+      mq.keystroke('Down Backspace');
+      assert.equal(mq.latex(), 'x_{ }^b');
+
+      mq.keystroke('Backspace');
+      assert.equal(mq.latex(), 'x^b');
+
+      mq.typedText('_a');
+      assert.equal(mq.latex(), 'x_a^b');
+
+      mq.keystroke('Left Backspace');
+      assert.equal(mq.latex(), 'xa^b');
+
+      mq.typedText('c');
+      assert.equal(mq.latex(), 'xca^b');
+    });
+    test('backspacing out of and then re-typing superscript', function() {
+      mq.latex('x_a^b');
+      assert.equal(mq.latex(), 'x_a^b');
+
+      mq.keystroke('Up Backspace');
+      assert.equal(mq.latex(), 'x_a^{ }');
+
+      mq.keystroke('Backspace');
+      assert.equal(mq.latex(), 'x_a');
+
+      mq.typedText('^b');
+      assert.equal(mq.latex(), 'x_a^b');
+
+      mq.keystroke('Left Backspace');
+      assert.equal(mq.latex(), 'x_ab');
+
+      mq.typedText('c');
+      assert.equal(mq.latex(), 'x_acb');
+    });
+  });
+});
+suite('autoOperatorNames', function() {
+  var mq;
+  setup(function() {
+    mq = MQ.MathField($('<span></span>').appendTo('#mock')[0]);
+  });
+  teardown(function() {
+    $(mq.el()).remove();
+  });
+
+  function assertLatex(input, expected) {
+    var result = mq.latex();
+    assert.equal(result, expected,
+      input+', got \''+result+'\', expected \''+expected+'\''
+    );
+  }
+
+  test('simple LaTeX parsing, typing', function() {
+    function assertAutoOperatorNamesWork(str, latex) {
+      var count = 0;
+      var _autoUnItalicize = Letter.prototype.autoUnItalicize;
+      Letter.prototype.autoUnItalicize = function() {
+        count += 1;
+        return _autoUnItalicize.apply(this, arguments);
+      };
+
+      mq.latex(str);
+      assertLatex('parsing \''+str+'\'', latex);
+      assert.equal(count, 1);
+
+      mq.latex(latex);
+      assertLatex('parsing \''+latex+'\'', latex);
+      assert.equal(count, 2);
+
+      mq.latex('');
+      for (var i = 0; i < str.length; i += 1) mq.typedText(str.charAt(i));
+      assertLatex('typing \''+str+'\'', latex);
+      assert.equal(count, 2 + str.length);
+    }
+
+    assertAutoOperatorNamesWork('sin', '\\sin');
+    assertAutoOperatorNamesWork('inf', '\\inf');
+    assertAutoOperatorNamesWork('arcosh', '\\operatorname{arcosh}');
+    assertAutoOperatorNamesWork('acosh', 'a\\cosh');
+    assertAutoOperatorNamesWork('cosine', '\\cos ine');
+    assertAutoOperatorNamesWork('arcosecant', 'ar\\operatorname{cosec}ant');
+    assertAutoOperatorNamesWork('cscscscscscsc', '\\csc s\\csc s\\csc sc');
+    assertAutoOperatorNamesWork('scscscscscsc', 's\\csc s\\csc s\\csc');
+  });
+
+  test('deleting', function() {
+    var count = 0;
+    var _autoUnItalicize = Letter.prototype.autoUnItalicize;
+    Letter.prototype.autoUnItalicize = function() {
+      count += 1;
+      return _autoUnItalicize.apply(this, arguments);
+    };
+
+    var str = 'cscscscscscsc';
+    for (var i = 0; i < str.length; i += 1) mq.typedText(str.charAt(i));
+    assertLatex('typing \''+str+'\'', '\\csc s\\csc s\\csc sc');
+    assert.equal(count, str.length);
+
+    mq.moveToLeftEnd().keystroke('Del');
+    assertLatex('deleted first char', 's\\csc s\\csc s\\csc');
+    assert.equal(count, str.length + 1);
+
+    mq.typedText('c');
+    assertLatex('typed back first char', '\\csc s\\csc s\\csc sc');
+    assert.equal(count, str.length + 2);
+
+    mq.typedText('+');
+    assertLatex('typed plus to interrupt sequence of letters', 'c+s\\csc s\\csc s\\csc');
+    assert.equal(count, str.length + 4);
+
+    mq.keystroke('Backspace');
+    assertLatex('deleted plus', '\\csc s\\csc s\\csc sc');
+    assert.equal(count, str.length + 5);
+  });
+
+  suite('override autoOperatorNames', function() {
+    test('basic', function() {
+      MQ.config({ autoOperatorNames: 'sin lol' });
+      mq.typedText('arcsintrololol');
+      assert.equal(mq.latex(), 'arc\\sin tro\\operatorname{lol}ol');
+    });
+
+    test('command contains non-letters', function() {
+      assert.throws(function() { MQ.config({ autoOperatorNames: 'e1' }); });
+    });
+
+    test('command length less than 2', function() {
+      assert.throws(function() { MQ.config({ autoOperatorNames: 'e' }); });
+    });
+
+    suite('command list not perfectly space-delimited', function() {
+      test('double space', function() {
+        assert.throws(function() { MQ.config({ autoOperatorNames: 'pi  theta' }); });
+      });
+
+      test('leading space', function() {
+        assert.throws(function() { MQ.config({ autoOperatorNames: ' pi' }); });
+      });
+
+      test('trailing space', function() {
+        assert.throws(function() { MQ.config({ autoOperatorNames: 'pi ' }); });
+      });
+    });
+  });
+});
+suite('autoSubscript', function() {
+  var mq;
+  setup(function() {
+    mq = MQ.MathField($('<span></span>').appendTo('#mock')[0], {autoSubscriptNumerals: true});
+    rootBlock = mq.__controller.root;
+    controller = mq.__controller;
+    cursor = controller.cursor;
+  });
+  teardown(function() {
+    $(mq.el()).remove();
+  });
+
+  test('auto subscripting variables', function() {
+    mq.latex('x');
+    mq.typedText('2');
+    assert.equal(mq.latex(), 'x_2');
+    mq.typedText('3');
+    assert.equal(mq.latex(), 'x_{23}');
+  });
+
+  test('do not autosubscript functions', function() {
+    mq.latex('sin');
+    mq.typedText('2');
+    assert.equal(mq.latex(), '\\sin2');
+    mq.typedText('3');
+    assert.equal(mq.latex(), '\\sin23');
+  });
+
+  test('autosubscript exponentiated variables', function() {
+    mq.latex('x^2');
+    mq.typedText('2');
+    assert.equal(mq.latex(), 'x_2^2');
+    mq.typedText('3');
+    assert.equal(mq.latex(), 'x_{23}^2');
+  });
+
+  test('do not autosubscript exponentiated functions', function() {
+    mq.latex('sin^{2}');
+    mq.typedText('2');
+    assert.equal(mq.latex(), '\\sin^22');
+    mq.typedText('3');
+    assert.equal(mq.latex(), '\\sin^223');
+  });
+
+  test('do not autosubscript subscripted functions', function() {
+    mq.latex('sin_{10}');
+    mq.typedText('2');
+    assert.equal(mq.latex(), '\\sin_{10}2');
+  });
+
+
+  test('backspace through compound subscript', function() {
+    mq.latex('x_{2_2}');
+
+    //first backspace moves to cursor in subscript and peels it off
+    mq.keystroke('Backspace');
+    assert.equal(mq.latex(),'x_2');
+
+    //second backspace clears out remaining subscript
+    mq.keystroke('Backspace');
+    assert.equal(mq.latex(),'x_{ }');
+
+    //unpeel subscript
+    mq.keystroke('Backspace');
+    assert.equal(mq.latex(),'x');
+  });
+
+  test('backspace through simple subscript', function() {
+    mq.latex('x_{2+3}');
+
+    assert.equal(cursor.parent, rootBlock, 'start in the root block');
+
+    //backspace peels off subscripts but stays at the root block level
+    mq.keystroke('Backspace');
+    assert.equal(mq.latex(),'x_{2+}');
+    assert.equal(cursor.parent, rootBlock, 'backspace keeps us in the root block');
+    mq.keystroke('Backspace');
+    assert.equal(mq.latex(),'x_2');
+    assert.equal(cursor.parent, rootBlock, 'backspace keeps us in the root block');
+
+    //second backspace clears out remaining subscript and unpeels
+    mq.keystroke('Backspace');
+    assert.equal(mq.latex(),'x');
+  });
+
+  test('backspace through subscript & superscript with autosubscripting on', function() {
+    mq.latex('x_2^{32}');
+
+    //first backspace peels off the subscript
+    mq.keystroke('Backspace');
+    assert.equal(mq.latex(),'x^{32}');
+
+    //second backspace goes into the exponent
+    mq.keystroke('Backspace');
+    assert.equal(mq.latex(),'x^{32}');
+
+    //clear out exponent
+    mq.keystroke('Backspace');
+    mq.keystroke('Backspace');
+    assert.equal(mq.latex(),'x^{ }');
+
+    //unpeel exponent
+    mq.keystroke('Backspace');
+    assert.equal(mq.latex(),'x');
+  });
+});
+suite('backspace', function() {
+  var mq, rootBlock, controller, cursor;
+  setup(function() {
+    mq = MQ.MathField($('<span></span>').appendTo('#mock')[0]);
+    rootBlock = mq.__controller.root;
+    controller = mq.__controller;
+    cursor = controller.cursor;
+  });
+  teardown(function() {
+    $(mq.el()).remove();
+  });
+
+  function prayWellFormedPoint(pt) { prayWellFormed(pt.parent, pt[L], pt[R]); }
+  function assertLatex(latex) {
+    prayWellFormedPoint(mq.__controller.cursor);
+    assert.equal(mq.latex(), latex);
+  }
+
+  test('backspace through exponent', function() {
+    controller.renderLatexMath('x^{nm}');
+    var exp = rootBlock.ends[R],
+      expBlock = exp.ends[L];
+    assert.equal(exp.latex(), '^{nm}', 'right end el is exponent');
+    assert.equal(cursor.parent, rootBlock, 'cursor is in root block');
+    assert.equal(cursor[L], exp, 'cursor is at the end of root block');
+
+    mq.keystroke('Backspace');
+    assert.equal(cursor.parent, expBlock, 'cursor up goes into exponent on backspace');
+    assertLatex('x^{nm}');
+
+    mq.keystroke('Backspace');
+    assert.equal(cursor.parent, expBlock, 'cursor still in exponent');
+    assertLatex('x^n');
+
+    mq.keystroke('Backspace');
+    assert.equal(cursor.parent, expBlock, 'still in exponent, but it is empty');
+    assertLatex('x^{ }');
+
+    mq.keystroke('Backspace');
+    assert.equal(cursor.parent, rootBlock, 'backspace tears down exponent');
+    assertLatex('x');
+  });
+
+  test('backspace through complex fraction', function() {
+    controller.renderLatexMath('1+\\frac{1}{\\frac{1}{2}+\\frac{2}{3}}');
+
+    //first backspace moves to denominator
+    mq.keystroke('Backspace');
+    assertLatex('1+\\frac{1}{\\frac{1}{2}+\\frac{2}{3}}');
+
+    //first backspace moves to denominator in denominator
+    mq.keystroke('Backspace');
+    assertLatex('1+\\frac{1}{\\frac{1}{2}+\\frac{2}{3}}');
+
+    //finally delete a character
+    mq.keystroke('Backspace');
+    assertLatex('1+\\frac{1}{\\frac{1}{2}+\\frac{2}{ }}');
+
+    //destroy fraction
+    mq.keystroke('Backspace');
+    assertLatex('1+\\frac{1}{\\frac{1}{2}+2}');
+
+    mq.keystroke('Backspace');
+    mq.keystroke('Backspace');
+    assertLatex('1+\\frac{1}{\\frac{1}{2}}');
+
+    mq.keystroke('Backspace');
+    mq.keystroke('Backspace');
+    assertLatex('1+\\frac{1}{\\frac{1}{ }}');
+
+    mq.keystroke('Backspace');
+    assertLatex('1+\\frac{1}{1}');
+
+    mq.keystroke('Backspace');
+    assertLatex('1+\\frac{1}{ }');
+
+    mq.keystroke('Backspace');
+    assertLatex('1+1');
+  });
+
+
+
+  test('backspace through compound subscript', function() {
+    mq.latex('x_{2_2}');
+
+    //first backspace goes into the subscript
+    mq.keystroke('Backspace');
+    assert.equal(mq.latex(),'x_{2_2}');
+
+    //second one goes into the subscripts' subscript
+    mq.keystroke('Backspace');
+    assert.equal(mq.latex(),'x_{2_2}');
+
+    mq.keystroke('Backspace');
+    assert.equal(mq.latex(),'x_{2_{ }}');
+
+    mq.keystroke('Backspace');
+    assert.equal(mq.latex(),'x_2');
+
+    mq.keystroke('Backspace');
+    assert.equal(mq.latex(),'x_{ }');
+
+    mq.keystroke('Backspace');
+    assert.equal(mq.latex(),'x');
+  });
+
+  test('backspace through simple subscript', function() {
+    mq.latex('x_{2+3}');
+
+    assert.equal(cursor.parent, rootBlock, 'start in the root block');
+
+    //backspace goes down
+    mq.keystroke('Backspace');
+    assert.equal(mq.latex(),'x_{2+3}');
+    mq.keystroke('Backspace');
+    assert.equal(mq.latex(),'x_{2+}');
+    mq.keystroke('Backspace');
+    assert.equal(mq.latex(),'x_2');
+    mq.keystroke('Backspace');
+    assert.equal(mq.latex(),'x_{ }');
+    mq.keystroke('Backspace');
+    assert.equal(mq.latex(),'x');
+  });
+
+  test('backspace through subscript & superscript', function() {
+    mq.latex('x_2^{32}');
+
+    //first backspace takes us into the exponent
+    mq.keystroke('Backspace');
+    assert.equal(mq.latex(),'x_2^{32}');
+
+    //second backspace is within the exponent
+    mq.keystroke('Backspace');
+    assert.equal(mq.latex(),'x_2^3');
+
+    //clear out exponent
+    mq.keystroke('Backspace');
+    assert.equal(mq.latex(),'x_2^{ }');
+
+    //unpeel exponent
+    mq.keystroke('Backspace');
+    assert.equal(mq.latex(),'x_2');
+
+    //into subscript
+    mq.keystroke('Backspace');
+    assert.equal(mq.latex(),'x_2');
+
+    //clear out subscript
+    mq.keystroke('Backspace');
+    assert.equal(mq.latex(),'x_{ }');
+
+    //unpeel exponent
+    mq.keystroke('Backspace');
+    assert.equal(mq.latex(),'x');
+
+    //clear out math field
+    mq.keystroke('Backspace');
+    assert.equal(mq.latex(),'');
+  });
+
+  test('backspace through nthroot', function() {
+    mq.latex('\\sqrt[3]{x}');
+
+    //first backspace takes us inside the nthroot
+    mq.keystroke('Backspace');
+    assert.equal(mq.latex(),'\\sqrt[3]{x}');
+
+    //second backspace removes the x
+    mq.keystroke('Backspace');
+    assert.equal(mq.latex(),'\\sqrt[3]{}');
+
+    //third one destroys the cube root, but leaves behind the 3
+    mq.keystroke('Backspace');
+    assert.equal(mq.latex(),'3');
+
+    mq.keystroke('Backspace');
+    assert.equal(mq.latex(),'');
+  });
+
+  test('backspace through large operator', function() {
+    mq.latex('\\sum_{n=1}^3x');
+
+    //first backspace takes out the argument
+    mq.keystroke('Backspace');
+    assert.equal(mq.latex(),'\\sum_{n=1}^3');
+
+    //up into the superscript
+    mq.keystroke('Backspace');
+    assert.equal(mq.latex(),'\\sum_{n=1}^3');
+
+    //up into the superscript
+    mq.keystroke('Backspace');
+    assert.equal(mq.latex(),'\\sum_{n=1}^{ }');
+
+    //destroy the sum, preserve the subscript (a little surprising)
+    mq.keystroke('Backspace');
+    assert.equal(mq.latex(),'n=1');
+  });
+
+  test('backspace into text block', function() {
+    mq.latex('\\text{x}');
+
+    mq.keystroke('Backspace');
+
+    var textBlock = rootBlock.ends[R];
+    assert.equal(cursor.parent, textBlock, 'cursor is in text block');
+    assert.equal(cursor[R], 0, 'cursor is at the end of text block');
+    assert.equal(cursor[L].text, 'x', 'cursor is rightward of the x');
+  });
+
+  suite('empties', function() {
+    test('backspace empty exponent', function() {
+      mq.latex('x^{}');
+      mq.keystroke('Backspace');
+      assert.equal(mq.latex(), 'x');
+    });
+
+    test('backspace empty sqrt', function() {
+      mq.latex('1+\\sqrt{}');
+      mq.keystroke('Backspace');
+      assert.equal(mq.latex(), '1+');
+    });
+
+    test('backspace empty fraction', function() {
+      mq.latex('1+\\frac{}{}');
+      mq.keystroke('Backspace');
+      assert.equal(mq.latex(), '1+');
+    });
+  });
+});
+suite('CSS', function() {
+  test('math field doesn\'t fuck up ancestor\'s .scrollWidth', function() {
+    var mock = $('#mock').css({
+      fontSize: '16px',
+      height: '25px', // must be greater than font-size * 115% + 2 * 2px (padding) + 2 * 1px (border)
+      width: '25px'
+    })[0];
+    assert.equal(mock.scrollHeight, 25);
+    assert.equal(mock.scrollWidth, 25);
+
+    var mq = MQ.MathField($('<span style="box-sizing:border-box;height:100%;width:100%"></span>').appendTo(mock)[0]);
+    assert.equal(mock.scrollHeight, 25);
+    assert.equal(mock.scrollWidth, 25);
+
+    $(mq.el()).remove();
+    $(mock).css({
+      fontSize: '',
+      height: '',
+      width: ''
+    });
+  });
+
+  test('empty root block does not collapse', function() {
+    var testEl = $('<span></span>').appendTo('#mock');
+    var mq = MQ.MathField(testEl[0]);
+    var rootEl = testEl.find('.mq-root-block');
+
+    assert.ok(rootEl.hasClass('mq-empty'), 'Empty root block should have the mq-empty class name.');
+    assert.ok(rootEl.height() > 0, 'Empty root block height should be above 0.');
+
+    testEl.remove();
+  });
+
+  test('empty block does not collapse', function() {
+    var testEl = $('<span>\\frac{}{}</span>').appendTo('#mock');
+    var mq = MQ.MathField(testEl[0]);
+    var numeratorEl = testEl.find('.mq-numerator');
+
+    assert.ok(numeratorEl.hasClass('mq-empty'), 'Empty numerator should have the mq-empty class name.');
+    assert.ok(numeratorEl.height() > 0, 'Empty numerator height should be above 0.');
+
+    testEl.remove();
+  });
+});
 suite('HTML', function() {
   function renderHtml(numBlocks, htmlTemplate) {
     var cmd = {
@@ -3989,11 +5571,18 @@ suite('latex', function() {
   function assertParsesLatex(str, latex) {
     if (arguments.length < 2) latex = str;
 
-    var result = latexMathParser.parse(str).join('latex');
+    var result = latexMathParser.parse(str).postOrder('finalizeTree', Options.p).join('latex');
     assert.equal(result, latex,
       'parsing \''+str+'\', got \''+result+'\', expected \''+latex+'\''
     );
   }
+
+  test('empty LaTeX', function () {
+    assertParsesLatex('');
+    assertParsesLatex(' ', '');
+    assertParsesLatex('{}', '');
+    assertParsesLatex('   {}{} {{{}}  }', '');
+  });
 
   test('variables', function() {
     assertParsesLatex('xyz');
@@ -4069,49 +5658,181 @@ suite('latex', function() {
     assertParsesLatex('\\left ( 123 \\right ) ', '\\left(123\\right)');
   });
 
+  test('escaped whitespace', function() {
+    assertParsesLatex('\\ ', '\\ ');
+    assertParsesLatex('\\      ', '\\ ');
+    assertParsesLatex('  \\   \\\t\t\t\\   \\\n\n\n', '\\ \\ \\ \\ ');
+    assertParsesLatex('\\space\\   \\   space  ', '\\ \\ \\ space');
+  });
+
   test('\\text', function() {
     assertParsesLatex('\\text { lol! } ', '\\text{ lol! }');
     assertParsesLatex('\\text{apples} \\ne \\text{oranges}',
                       '\\text{apples}\\ne \\text{oranges}');
   });
 
-  suite('RootMathBlock::renderLatex', function() {
-    var el;
+  suite('public API', function() {
+    var mq;
     setup(function() {
-      el = $('<span></span>').appendTo('#mock').mathquill('editable');
+      mq = MQ.MathField($('<span></span>').appendTo('#mock')[0]);
     });
     teardown(function() {
-      el.remove();
+      $(mq.el()).remove();
     });
 
-    test('basic rendering', function() {
-      el.mathquill('latex', 'x = \\frac{ -b \\pm \\sqrt{ b^2 - 4ac } }{ 2a }');
-      assert.equal(el.mathquill('latex'), 'x=\\frac{-b\\pm\\sqrt{b^2-4ac}}{2a}');
+    suite('.latex(...)', function() {
+      function assertParsesLatex(str, latex) {
+        if (arguments.length < 2) latex = str;
+        mq.latex(str);
+        assert.equal(mq.latex(), latex);
+      }
+
+      test('basic rendering', function() {
+        assertParsesLatex('x = \\frac{ -b \\pm \\sqrt{ b^2 - 4ac } }{ 2a }',
+                          'x=\\frac{-b\\pm\\sqrt{b^2-4ac}}{2a}');
+      });
+
+      test('re-rendering', function() {
+        assertParsesLatex('a x^2 + b x + c = 0', 'ax^2+bx+c=0');
+        assertParsesLatex('x = \\frac{ -b \\pm \\sqrt{ b^2 - 4ac } }{ 2a }',
+                          'x=\\frac{-b\\pm\\sqrt{b^2-4ac}}{2a}');
+      });
+
+      test('empty LaTeX', function () {
+        assertParsesLatex('');
+        assertParsesLatex(' ', '');
+        assertParsesLatex('{}', '');
+        assertParsesLatex('   {}{} {{{}}  }', '');
+      });
+
+      test('coerces to a string', function () {
+        assertParsesLatex(undefined, 'undefined');
+        assertParsesLatex(null, 'null');
+        assertParsesLatex(0, '0');
+        assertParsesLatex(Infinity, 'Infinity');
+        assertParsesLatex(NaN, 'NaN');
+        assertParsesLatex(true, 'true');
+        assertParsesLatex(false, 'false');
+        assertParsesLatex({}, '[objectObject]'); // lol, the space gets ignored
+        assertParsesLatex({toString: function() { return 'thing'; }}, 'thing');
+      });
     });
 
-    test('re-rendering', function() {
-      el.mathquill('latex', 'a x^2 + b x + c = 0');
-      assert.equal(el.mathquill('latex'), 'ax^2+bx+c=0');
-      el.mathquill('latex', 'x = \\frac{ -b \\pm \\sqrt{ b^2 - 4ac } }{ 2a }');
-      assert.equal(el.mathquill('latex'), 'x=\\frac{-b\\pm\\sqrt{b^2-4ac}}{2a}');
+    suite('.write(...)', function() {
+      test('empty LaTeX', function () {
+        function assertParsesLatex(str, latex) {
+          if (arguments.length < 2) latex = str;
+          mq.write(str);
+          assert.equal(mq.latex(), latex);
+        }
+        assertParsesLatex('');
+        assertParsesLatex(' ', '');
+        assertParsesLatex('{}', '');
+        assertParsesLatex('   {}{} {{{}}  }', '');
+      });
+
+      suite('\\sum', function() {
+        test('basic', function() {
+          mq.write('\\sum_{n=0}^5');
+          assert.equal(mq.latex(), '\\sum_{n=0}^5');
+          mq.write('x^n');
+          assert.equal(mq.latex(), '\\sum_{n=0}^5x^n');
+        });
+
+        test('only lower bound', function() {
+          mq.write('\\sum_{n=0}');
+          assert.equal(mq.latex(), '\\sum_{n=0}^{ }');
+          mq.write('x^n');
+          assert.equal(mq.latex(), '\\sum_{n=0}^{ }x^n');
+        });
+
+        test('only upper bound', function() {
+          mq.write('\\sum^5');
+          assert.equal(mq.latex(), '\\sum_{ }^5');
+          mq.write('x^n');
+          assert.equal(mq.latex(), '\\sum_{ }^5x^n');
+        });
+      });
+    });
+  });
+
+  suite('\\MathQuillMathField', function() {
+    var outer, inner1, inner2;
+    setup(function() {
+      outer = MQ.StaticMath(
+        $('<span>\\frac{\\MathQuillMathField{x_0 + x_1 + x_2}}{\\MathQuillMathField{3}}</span>')
+        .appendTo('#mock')[0]
+      );
+      inner1 = outer.innerFields[0];
+      inner2 = outer.innerFields[1];
+    });
+    teardown(function() {
+      $(outer.el()).remove();
+    });
+
+    test('initial latex', function() {
+      assert.equal(inner1.latex(), 'x_0+x_1+x_2');
+      assert.equal(inner2.latex(), '3');
+      assert.equal(outer.latex(), '\\frac{x_0+x_1+x_2}{3}');
+    });
+
+    test('setting latex', function() {
+      inner1.latex('\\sum_{i=0}^N x_i');
+      inner2.latex('N');
+      assert.equal(inner1.latex(), '\\sum_{i=0}^Nx_i');
+      assert.equal(inner2.latex(), 'N');
+      assert.equal(outer.latex(), '\\frac{\\sum_{i=0}^Nx_i}{N}');
+    });
+
+    test('writing latex', function() {
+      inner1.write('+ x_3');
+      inner2.write('+ 1');
+      assert.equal(inner1.latex(), 'x_0+x_1+x_2+x_3');
+      assert.equal(inner2.latex(), '3+1');
+      assert.equal(outer.latex(), '\\frac{x_0+x_1+x_2+x_3}{3+1}');
+    });
+
+    test('optional inner field name', function() {
+      outer.latex('\\MathQuillMathField[mantissa]{}\\cdot\\MathQuillMathField[base]{}^{\\MathQuillMathField[exp]{}}');
+      assert.equal(outer.innerFields.length, 3);
+
+      var mantissa = outer.innerFields.mantissa;
+      var base = outer.innerFields.base;
+      var exp = outer.innerFields.exp;
+
+      assert.equal(mantissa, outer.innerFields[0]);
+      assert.equal(base, outer.innerFields[1]);
+      assert.equal(exp, outer.innerFields[2]);
+
+      mantissa.latex('1.2345');
+      base.latex('10');
+      exp.latex('8');
+      assert.equal(outer.latex(), '1.2345\\cdot10^8');
+    });
+
+    test('separate API object', function() {
+      var outer2 = MQ(outer.el());
+      assert.equal(outer2.innerFields.length, 2);
+      assert.equal(outer2.innerFields[0].id, inner1.id);
+      assert.equal(outer2.innerFields[1].id, inner2.id);
     });
   });
 
   suite('error handling', function() {
-    var el;
+    var mq;
     setup(function() {
-      el = $('<span></span>').appendTo('#mock').mathquill('editable');
+      mq = MQ.MathField($('<span></span>').appendTo('#mock')[0]);
     });
     teardown(function() {
-      el.remove();
+      $(mq.el()).remove();
     });
 
     function testCantParse(title /*, latex...*/) {
       var latex = [].slice.call(arguments, 1);
       test(title, function() {
         for (var i = 0; i < latex.length; i += 1) {
-          el.mathquill('latex', latex[i]);
-          assert.equal(el.mathquill('latex'), '', "shouldn\'t parse '"+latex[i]+"'");
+          mq.latex(latex[i]);
+          assert.equal(mq.latex(), '', "shouldn\'t parse '"+latex[i]+"'");
         }
       });
     }
@@ -4352,13 +6073,733 @@ suite('parser', function() {
     assert.equal(parser.parse('x'), 'default');
   });
 });
+suite('Public API', function() {
+  suite('global functions', function() {
+    test('null', function() {
+      assert.equal(MQ(), null);
+      assert.equal(MQ(0), null);
+      assert.equal(MQ('<span/>'), null);
+      assert.equal(MQ($('<span/>')[0]), null);
+      assert.equal(MQ.MathField(), null);
+      assert.equal(MQ.MathField(0), null);
+      assert.equal(MQ.MathField('<span/>'), null);
+    });
+
+    test('MQ.MathField()', function() {
+      var el = $('<span>x^2</span>');
+      var mathField = MQ.MathField(el[0]);
+      assert.ok(mathField instanceof MQ.MathField);
+      assert.ok(mathField instanceof MQ.EditableField);
+      assert.ok(mathField instanceof MQ);
+      assert.ok(mathField instanceof MathQuill);
+    });
+
+    test('interface versioning isolates prototype chain', function() {
+      var mathFieldSpan = $('<span/>')[0];
+      var mathField = MQ.MathField(mathFieldSpan);
+
+      var MQ1 = MathQuill.getInterface(1);
+      assert.ok(!(mathField instanceof MQ1.MathField));
+      assert.ok(!(mathField instanceof MQ1.EditableField));
+      assert.ok(!(mathField instanceof MQ1));
+    });
+
+    test('identity of API object returned by MQ()', function() {
+      var mathFieldSpan = $('<span/>')[0];
+      var mathField = MQ.MathField(mathFieldSpan);
+
+      assert.ok(MQ(mathFieldSpan) !== mathField);
+
+      assert.equal(MQ(mathFieldSpan).id, mathField.id);
+      assert.equal(MQ(mathFieldSpan).id, MQ(mathFieldSpan).id);
+
+      assert.equal(MQ(mathFieldSpan).data, mathField.data);
+      assert.equal(MQ(mathFieldSpan).data, MQ(mathFieldSpan).data);
+    });
+
+    test('blurred when created', function() {
+      var el = $('<span/>');
+      MQ.MathField(el[0]);
+      var rootBlock = el.find('.mq-root-block');
+      assert.ok(rootBlock.hasClass('mq-empty'));
+      assert.ok(!rootBlock.hasClass('mq-hasCursor'));
+    });
+  });
+
+  suite('mathquill-basic', function() {
+    var mq;
+    setup(function() {
+      mq = MQBasic.MathField($('<span></span>').appendTo('#mock')[0]);
+    });
+    teardown(function() {
+      $(mq.el()).remove();
+    });
+
+    test('typing \\', function() {
+      mq.typedText('\\');
+      assert.equal(mq.latex(), '\\backslash');
+    });
+
+    test('typing $', function() {
+      mq.typedText('$');
+      assert.equal(mq.latex(), '\\$');
+    });
+
+    test('parsing of advanced symbols', function() {
+      mq.latex('\\oplus');
+      assert.equal(mq.latex(), ''); // TODO: better LaTeX parse error behavior
+    });
+  });
+
+  suite('basic API methods', function() {
+    var mq;
+    setup(function() {
+      mq = MQ.MathField($('<span></span>').appendTo('#mock')[0]);
+    });
+    teardown(function() {
+      $(mq.el()).remove();
+    });
+
+    test('.revert()', function() {
+      var mq = MQ.MathField($('<span>some <code>HTML</code></span>')[0]);
+      assert.equal(mq.revert().html(), 'some <code>HTML</code>');
+    });
+
+    test('select, clearSelection', function() {
+      mq.latex('n+\\frac{n}{2}');
+      assert.ok(!mq.__controller.cursor.selection);
+      mq.select();
+      assert.equal(mq.__controller.cursor.selection.join('latex'), 'n+\\frac{n}{2}');
+      mq.clearSelection();
+      assert.ok(!mq.__controller.cursor.selection);
+    });
+
+    test('latex while there\'s a selection', function() {
+      mq.latex('a');
+      assert.equal(mq.latex(), 'a');
+      mq.select();
+      assert.equal(mq.__controller.cursor.selection.join('latex'), 'a');
+      mq.latex('b');
+      assert.equal(mq.latex(), 'b');
+      mq.typedText('c');
+      assert.equal(mq.latex(), 'bc');
+    });
+
+    test('.html() trivial case', function() {
+      mq.latex('x+y');
+      assert.equal(mq.html(), '<var>x</var><span class="mq-binary-operator">+</span><var>y</var>');
+    });
+    
+    test('.text() with incomplete commands', function() {
+      assert.equal(mq.text(), '');
+      mq.typedText('\\');
+      assert.equal(mq.text(), '\\');
+      mq.typedText('s');
+      assert.equal(mq.text(), '\\s');
+      mq.typedText('qrt');
+      assert.equal(mq.text(), '\\sqrt');
+    });
+    
+    test('.text() with complete commands', function() {
+      mq.latex('\\sqrt{}');
+      assert.equal(mq.text(), 'sqrt()');
+      mq.latex('\\nthroot[]{}');
+      assert.equal(mq.text(), 'sqrt[]()');
+      mq.latex('\\frac{}{}');
+      assert.equal(mq.text(), '(/)');
+      mq.latex('\\frac{3}{5}');
+      assert.equal(mq.text(), '(3/5)');
+      mq.latex('\\div');
+      assert.equal(mq.text(), '[/]');
+      mq.latex('^{}');
+      assert.equal(mq.text(), '**');
+      mq.latex('3^{4}');
+      assert.equal(mq.text(), '3**4');
+    });
+
+    test('.moveToDirEnd(dir)', function() {
+      mq.latex('a x^2 + b x + c = 0');
+      assert.equal(mq.__controller.cursor[L].ctrlSeq, '0');
+      assert.equal(mq.__controller.cursor[R], 0);
+      mq.moveToLeftEnd();
+      assert.equal(mq.__controller.cursor[L], 0);
+      assert.equal(mq.__controller.cursor[R].ctrlSeq, 'a');
+      mq.moveToRightEnd();
+      assert.equal(mq.__controller.cursor[L].ctrlSeq, '0');
+      assert.equal(mq.__controller.cursor[R], 0);
+    });
+  });
+
+  test('edit handler interface versioning', function() {
+    var count = 0;
+
+    // interface version 2 (latest)
+    var mq2 = MQ.MathField($('<span></span>').appendTo('#mock')[0], {
+      handlers: {
+        edit: function(_mq) {
+          assert.equal(mq2.id, _mq.id);
+          count += 1;
+        }
+      }
+    });
+    assert.equal(count, 0);
+    mq2.latex('x^2');
+    assert.equal(count, 2); // sigh, once for postOrder and once for bubble
+
+    count = 0;
+    // interface version 1
+    var MQ1 = MathQuill.getInterface(1);
+    var mq1 = MQ1.MathField($('<span></span>').appendTo('#mock')[0], {
+      handlers: {
+        edit: function(_mq) {
+          if (count <= 2) assert.equal(mq1, undefined);
+          else assert.equal(mq1.id, _mq.id);
+          count += 1;
+        }
+      }
+    });
+    assert.equal(count, 2);
+  });
+
+  suite('*OutOf handlers', function() {
+    testHandlers('MQ.MathField() constructor', function(options) {
+      return MQ.MathField($('<span></span>').appendTo('#mock')[0], options);
+    });
+    testHandlers('MQ.MathField::config()', function(options) {
+      return MQ.MathField($('<span></span>').appendTo('#mock')[0]).config(options);
+    });
+    testHandlers('.config() on \\MathQuillMathField{} in a MQ.StaticMath', function(options) {
+      return MQ.MathField($('<span></span>').appendTo('#mock')[0]).config(options);
+    });
+    suite('global MQ.config()', function() {
+      testHandlers('a MQ.MathField', function(options) {
+        MQ.config(options);
+        return MQ.MathField($('<span></span>').appendTo('#mock')[0]);
+      });
+      testHandlers('\\MathQuillMathField{} in a MQ.StaticMath', function(options) {
+        MQ.config(options);
+        return MQ.StaticMath($('<span>\\MathQuillMathField{}</span>').appendTo('#mock')[0]).innerFields[0];
+      });
+      teardown(function() {
+        MQ.config({ handlers: undefined });
+      });
+    });
+    function testHandlers(title, mathFieldMaker) {
+      test(title, function() {
+        var enterCounter = 0, upCounter = 0, moveCounter = 0, deleteCounter = 0,
+          dir = null;
+
+        var mq = mathFieldMaker({
+          handlers: {
+            enter: function(_mq) {
+              assert.equal(arguments.length, 1);
+              assert.equal(_mq.id, mq.id);
+              enterCounter += 1;
+            },
+            upOutOf: function(_mq) {
+              assert.equal(arguments.length, 1);
+              assert.equal(_mq.id, mq.id);
+              upCounter += 1;
+            },
+            moveOutOf: function(_dir, _mq) {
+              assert.equal(arguments.length, 2);
+              assert.equal(_mq.id, mq.id);
+              dir = _dir;
+              moveCounter += 1;
+            },
+            deleteOutOf: function(_dir, _mq) {
+              assert.equal(arguments.length, 2);
+              assert.equal(_mq.id, mq.id);
+              dir = _dir;
+              deleteCounter += 1;
+            }
+          }
+        });
+
+        mq.latex('n+\\frac{n}{2}'); // starts at right edge
+        assert.equal(moveCounter, 0);
+
+        mq.typedText('\n'); // nothing happens
+        assert.equal(enterCounter, 1);
+
+        mq.keystroke('Right'); // stay at right edge
+        assert.equal(moveCounter, 1);
+        assert.equal(dir, R);
+
+        mq.keystroke('Right'); // stay at right edge
+        assert.equal(moveCounter, 2);
+        assert.equal(dir, R);
+
+        mq.keystroke('Left'); // right edge of denominator
+        assert.equal(moveCounter, 2);
+        assert.equal(upCounter, 0);
+
+        mq.keystroke('Up'); // right edge of numerator
+        assert.equal(moveCounter, 2);
+        assert.equal(upCounter, 0);
+
+        mq.keystroke('Up'); // stays at right edge of numerator
+        assert.equal(upCounter, 1);
+
+        mq.keystroke('Up'); // stays at right edge of numerator
+        assert.equal(upCounter, 2);
+
+        // go to left edge
+        mq.keystroke('Left').keystroke('Left').keystroke('Left').keystroke('Left');
+        assert.equal(moveCounter, 2);
+
+        mq.keystroke('Left'); // stays at left edge
+        assert.equal(moveCounter, 3);
+        assert.equal(dir, L);
+        assert.equal(deleteCounter, 0);
+
+        mq.keystroke('Backspace'); // stays at left edge
+        assert.equal(deleteCounter, 1);
+        assert.equal(dir, L);
+
+        mq.keystroke('Backspace'); // stays at left edge
+        assert.equal(deleteCounter, 2);
+        assert.equal(dir, L);
+
+        mq.keystroke('Left'); // stays at left edge
+        assert.equal(moveCounter, 4);
+        assert.equal(dir, L);
+
+        $('#mock').empty();
+      });
+    }
+  });
+
+  suite('.cmd(...)', function() {
+    var mq;
+    setup(function() {
+      mq = MQ.MathField($('<span></span>').appendTo('#mock')[0]);
+    });
+    teardown(function() {
+      $(mq.el()).remove();
+    });
+
+    test('basic', function() {
+      mq.cmd('x');
+      assert.equal(mq.latex(), 'x');
+      mq.cmd('y');
+      assert.equal(mq.latex(), 'xy');
+      mq.cmd('^');
+      assert.equal(mq.latex(), 'xy^{ }');
+      mq.cmd('2');
+      assert.equal(mq.latex(), 'xy^2');
+      mq.keystroke('Right Shift-Left Shift-Left Shift-Left').cmd('\\sqrt');
+      assert.equal(mq.latex(), '\\sqrt{xy^2}');
+    });
+
+    test('backslash commands are passed their name', function() {
+      mq.cmd('\\alpha');
+      assert.equal(mq.latex(), '\\alpha');
+    });
+
+    test('replaces selection', function() {
+      mq.typedText('49').select().cmd('\\sqrt');
+      assert.equal(mq.latex(), '\\sqrt{49}');
+    });
+
+    test('operator name', function() {
+      mq.cmd('\\sin');
+      assert.equal(mq.latex(), '\\sin');
+    });
+
+    test('nonexistent LaTeX command is noop', function() {
+      mq.typedText('49').select().cmd('\\asdf').cmd('\\sqrt');
+      assert.equal(mq.latex(), '\\sqrt{49}');
+    });
+  });
+
+  suite('spaceBehavesLikeTab', function() {
+    var mq, rootBlock, cursor;
+    test('space behaves like tab with default opts', function() {
+      mq = MQ.MathField($('<span></span>').appendTo('#mock')[0]);
+      rootBlock = mq.__controller.root;
+      cursor = mq.__controller.cursor;
+
+      mq.latex('\\sqrt{x}');
+      mq.keystroke('Left');
+
+      mq.keystroke('Spacebar');
+      mq.typedText(' ');
+      assert.equal(cursor[L].ctrlSeq, '\\ ', 'left of the cursor is ' + cursor[L].ctrlSeq);
+      assert.equal(cursor[R], 0, 'right of the cursor is ' + cursor[R]);
+      mq.keystroke('Backspace');
+
+      mq.keystroke('Shift-Spacebar');
+      mq.typedText(' ');
+      assert.equal(cursor[L].ctrlSeq, '\\ ', 'left of the cursor is ' + cursor[L].ctrlSeq);
+      assert.equal(cursor[R], 0, 'right of the cursor is ' + cursor[R]);
+
+      $(mq.el()).remove();
+    });
+    test('space behaves like tab when spaceBehavesLikeTab is true', function() {
+      var opts = { 'spaceBehavesLikeTab': true };
+      mq = MQ.MathField( $('<span></span>').appendTo('#mock')[0], opts)
+      rootBlock = mq.__controller.root;
+      cursor = mq.__controller.cursor;
+
+      mq.latex('\\sqrt{x}');
+
+      mq.keystroke('Left');
+      mq.keystroke('Spacebar');
+      assert.equal(cursor[L].parent, rootBlock, 'parent of the cursor is  ' + cursor[L].ctrlSeq);
+      assert.equal(cursor[R], 0, 'right cursor is ' + cursor[R]);
+
+      mq.keystroke('Left');
+      mq.keystroke('Shift-Spacebar');
+      assert.equal(cursor[L], 0, 'left cursor is ' + cursor[L]);
+      assert.equal(cursor[R], rootBlock.ends[L], 'parent of rootBlock is ' + cursor[R]);
+
+      $(mq.el()).remove();
+    });
+    test('space behaves like tab when globally set to true', function() {
+      MQ.config({ spaceBehavesLikeTab: true });
+
+      mq = MQ.MathField( $('<span></span>').appendTo('#mock')[0]);
+      rootBlock = mq.__controller.root;
+      cursor = mq.__controller.cursor;
+
+      mq.latex('\\sqrt{x}');
+
+      mq.keystroke('Left');
+      mq.keystroke('Spacebar');
+      assert.equal(cursor.parent, rootBlock, 'cursor in root block');
+      assert.equal(cursor[R], 0, 'cursor at end of block');
+
+      $(mq.el()).remove();
+    });
+  });
+
+  suite('statelessClipboard option', function() {
+    suite('default', function() {
+      var mq, textarea;
+      setup(function() {
+        mq = MQ.MathField($('<span></span>').appendTo('#mock')[0]);
+        textarea = $(mq.el()).find('textarea');;
+      });
+      teardown(function() {
+        $(mq.el()).remove();
+      });
+      function assertPaste(paste, latex) {
+        if (arguments.length < 2) latex = paste;
+        mq.latex('');
+        textarea.trigger('paste').val(paste).trigger('input');
+        assert.equal(mq.latex(), latex);
+      }
+
+      test('numbers and letters', function() {
+        assertPaste('123xyz');
+      });
+      test('a sentence', function() {
+        assertPaste('Lorem ipsum is a placeholder text commonly used to '
+                    + 'demonstrate the graphical elements of a document or '
+                    + 'visual presentation.',
+                    'Loremipsumisaplaceholdertextcommonlyusedtodemonstrate'
+                    + 'thegraphicalelementsofadocumentorvisualpresentation.');
+      });
+      test('actual LaTeX', function() {
+        assertPaste('a_nx^n+a_{n+1}x^{n+1}');
+        assertPaste('\\frac{1}{2\\sqrt{x}}');
+      });
+      test('\\text{...}', function() {
+        assertPaste('\\text{lol}');
+        assertPaste('1+\\text{lol}+2');
+        assertPaste('\\frac{\\text{apples}}{\\text{oranges}}');
+      });
+      test('selection', function(done) {
+        mq.latex('x^2').select();
+        setTimeout(function() {
+          assert.equal(textarea.val(), 'x^2');
+          done();
+        });
+      });
+    });
+    suite('statelessClipboard set to true', function() {
+      var mq, textarea;
+      setup(function() {
+        mq = MQ.MathField($('<span></span>').appendTo('#mock')[0],
+                                 { statelessClipboard: true });
+        textarea = $(mq.el()).find('textarea');;
+      });
+      teardown(function() {
+        $(mq.el()).remove();
+      });
+      function assertPaste(paste, latex) {
+        if (arguments.length < 2) latex = paste;
+        mq.latex('');
+        textarea.trigger('paste').val(paste).trigger('input');
+        assert.equal(mq.latex(), latex);
+      }
+
+      test('numbers and letters', function() {
+        assertPaste('123xyz', '\\text{123xyz}');
+      });
+      test('a sentence', function() {
+        assertPaste('Lorem ipsum is a placeholder text commonly used to '
+                    + 'demonstrate the graphical elements of a document or '
+                    + 'visual presentation.',
+                    '\\text{Lorem ipsum is a placeholder text commonly used to '
+                    + 'demonstrate the graphical elements of a document or '
+                    + 'visual presentation.}');
+      });
+      test('backslashes', function() {
+        assertPaste('something \\pi something \\asdf',
+                    '\\text{something \\pi something \\asdf}');
+      });
+      // TODO: braces (currently broken)
+      test('actual math LaTeX wrapped in dollar signs', function() {
+        assertPaste('$a_nx^n+a_{n+1}x^{n+1}$', 'a_nx^n+a_{n+1}x^{n+1}');
+        assertPaste('$\\frac{1}{2\\sqrt{x}}$', '\\frac{1}{2\\sqrt{x}}');
+      });
+      test('selection', function(done) {
+        mq.latex('x^2').select();
+        setTimeout(function() {
+          assert.equal(textarea.val(), '$x^2$');
+          done();
+        });
+      });
+    });
+  });
+
+  suite('leftRightIntoCmdGoes: "up"/"down"', function() {
+    test('"up" or "down" required', function() {
+      assert.throws(function() {
+        MQ.MathField($('<span></span>')[0], { leftRightIntoCmdGoes: 1 });
+      });
+    });
+    suite('default', function() {
+      var mq;
+      setup(function() {
+        mq = MQ.MathField($('<span></span>').appendTo('#mock')[0]);
+      });
+      teardown(function() {
+        $(mq.el()).remove();
+      });
+
+      test('fractions', function() {
+        mq.latex('\\frac{1}{x}+\\frac{\\frac{1}{2}}{\\frac{3}{4}}');
+        assert.equal(mq.latex(), '\\frac{1}{x}+\\frac{\\frac{1}{2}}{\\frac{3}{4}}');
+
+        mq.moveToLeftEnd().typedText('a');
+        assert.equal(mq.latex(), 'a\\frac{1}{x}+\\frac{\\frac{1}{2}}{\\frac{3}{4}}');
+
+        mq.keystroke('Right').typedText('b');
+        assert.equal(mq.latex(), 'a\\frac{b1}{x}+\\frac{\\frac{1}{2}}{\\frac{3}{4}}');
+
+        mq.keystroke('Right Right').typedText('c');
+        assert.equal(mq.latex(), 'a\\frac{b1}{cx}+\\frac{\\frac{1}{2}}{\\frac{3}{4}}');
+
+        mq.keystroke('Right Right').typedText('d');
+        assert.equal(mq.latex(), 'a\\frac{b1}{cx}d+\\frac{\\frac{1}{2}}{\\frac{3}{4}}');
+
+        mq.keystroke('Right Right').typedText('e');
+        assert.equal(mq.latex(), 'a\\frac{b1}{cx}d+\\frac{e\\frac{1}{2}}{\\frac{3}{4}}');
+
+        mq.keystroke('Right').typedText('f');
+        assert.equal(mq.latex(), 'a\\frac{b1}{cx}d+\\frac{e\\frac{f1}{2}}{\\frac{3}{4}}');
+
+        mq.keystroke('Right Right').typedText('g');
+        assert.equal(mq.latex(), 'a\\frac{b1}{cx}d+\\frac{e\\frac{f1}{g2}}{\\frac{3}{4}}');
+
+        mq.keystroke('Right Right').typedText('h');
+        assert.equal(mq.latex(), 'a\\frac{b1}{cx}d+\\frac{e\\frac{f1}{g2}h}{\\frac{3}{4}}');
+
+        mq.keystroke('Right').typedText('i');
+        assert.equal(mq.latex(), 'a\\frac{b1}{cx}d+\\frac{e\\frac{f1}{g2}h}{i\\frac{3}{4}}');
+
+        mq.keystroke('Right').typedText('j');
+        assert.equal(mq.latex(), 'a\\frac{b1}{cx}d+\\frac{e\\frac{f1}{g2}h}{i\\frac{j3}{4}}');
+
+        mq.keystroke('Right Right').typedText('k');
+        assert.equal(mq.latex(), 'a\\frac{b1}{cx}d+\\frac{e\\frac{f1}{g2}h}{i\\frac{j3}{k4}}');
+
+        mq.keystroke('Right Right').typedText('l');
+        assert.equal(mq.latex(), 'a\\frac{b1}{cx}d+\\frac{e\\frac{f1}{g2}h}{i\\frac{j3}{k4}l}');
+
+        mq.keystroke('Right').typedText('m');
+        assert.equal(mq.latex(), 'a\\frac{b1}{cx}d+\\frac{e\\frac{f1}{g2}h}{i\\frac{j3}{k4}l}m');
+      });
+
+      test('supsub', function() {
+        mq.latex('x_a+y^b+z_a^b+w');
+        assert.equal(mq.latex(), 'x_a+y^b+z_a^b+w');
+
+        mq.moveToLeftEnd().typedText('1');
+        assert.equal(mq.latex(), '1x_a+y^b+z_a^b+w');
+
+        mq.keystroke('Right Right').typedText('2');
+        assert.equal(mq.latex(), '1x_{2a}+y^b+z_a^b+w');
+
+        mq.keystroke('Right Right').typedText('3');
+        assert.equal(mq.latex(), '1x_{2a}3+y^b+z_a^b+w');
+
+        mq.keystroke('Right Right Right').typedText('4');
+        assert.equal(mq.latex(), '1x_{2a}3+y^{4b}+z_a^b+w');
+
+        mq.keystroke('Right Right').typedText('5');
+        assert.equal(mq.latex(), '1x_{2a}3+y^{4b}5+z_a^b+w');
+
+        mq.keystroke('Right Right Right').typedText('6');
+        assert.equal(mq.latex(), '1x_{2a}3+y^{4b}5+z_{6a}^b+w');
+
+        mq.keystroke('Right Right').typedText('7');
+        assert.equal(mq.latex(), '1x_{2a}3+y^{4b}5+z_{6a}^{7b}+w');
+
+        mq.keystroke('Right Right').typedText('8');
+        assert.equal(mq.latex(), '1x_{2a}3+y^{4b}5+z_{6a}^{7b}8+w');
+      });
+
+      test('nthroot', function() {
+        mq.latex('\\sqrt[n]{x}');
+        assert.equal(mq.latex(), '\\sqrt[n]{x}');
+
+        mq.moveToLeftEnd().typedText('1');
+        assert.equal(mq.latex(), '1\\sqrt[n]{x}');
+
+        mq.keystroke('Right').typedText('2');
+        assert.equal(mq.latex(), '1\\sqrt[2n]{x}');
+
+        mq.keystroke('Right Right').typedText('3');
+        assert.equal(mq.latex(), '1\\sqrt[2n]{3x}');
+
+        mq.keystroke('Right Right').typedText('4');
+        assert.equal(mq.latex(), '1\\sqrt[2n]{3x}4');
+      });
+    });
+
+    suite('"up"', function() {
+      var mq;
+      setup(function() {
+        mq = MQ.MathField($('<span></span>').appendTo('#mock')[0],
+                                 { leftRightIntoCmdGoes: 'up' });
+      });
+      teardown(function() {
+        $(mq.el()).remove();
+      });
+
+      test('fractions', function() {
+        mq.latex('\\frac{1}{x}+\\frac{\\frac{1}{2}}{\\frac{3}{4}}');
+        assert.equal(mq.latex(), '\\frac{1}{x}+\\frac{\\frac{1}{2}}{\\frac{3}{4}}');
+
+        mq.moveToLeftEnd().typedText('a');
+        assert.equal(mq.latex(), 'a\\frac{1}{x}+\\frac{\\frac{1}{2}}{\\frac{3}{4}}');
+
+        mq.keystroke('Right').typedText('b');
+        assert.equal(mq.latex(), 'a\\frac{b1}{x}+\\frac{\\frac{1}{2}}{\\frac{3}{4}}');
+
+        mq.keystroke('Right Right').typedText('c');
+        assert.equal(mq.latex(), 'a\\frac{b1}{x}c+\\frac{\\frac{1}{2}}{\\frac{3}{4}}');
+
+        mq.keystroke('Right Right').typedText('d');
+        assert.equal(mq.latex(), 'a\\frac{b1}{x}c+\\frac{d\\frac{1}{2}}{\\frac{3}{4}}');
+
+        mq.keystroke('Right').typedText('e');
+        assert.equal(mq.latex(), 'a\\frac{b1}{x}c+\\frac{d\\frac{e1}{2}}{\\frac{3}{4}}');
+
+        mq.keystroke('Right Right').typedText('f');
+        assert.equal(mq.latex(), 'a\\frac{b1}{x}c+\\frac{d\\frac{e1}{2}f}{\\frac{3}{4}}');
+
+        mq.keystroke('Right').typedText('g');
+        assert.equal(mq.latex(), 'a\\frac{b1}{x}c+\\frac{d\\frac{e1}{2}f}{\\frac{3}{4}}g');
+      });
+
+      test('supsub', function() {
+        mq.latex('x_a+y^b+z_a^b+w');
+        assert.equal(mq.latex(), 'x_a+y^b+z_a^b+w');
+
+        mq.moveToLeftEnd().typedText('1');
+        assert.equal(mq.latex(), '1x_a+y^b+z_a^b+w');
+
+        mq.keystroke('Right Right').typedText('2');
+        assert.equal(mq.latex(), '1x_{2a}+y^b+z_a^b+w');
+
+        mq.keystroke('Right Right').typedText('3');
+        assert.equal(mq.latex(), '1x_{2a}3+y^b+z_a^b+w');
+
+        mq.keystroke('Right Right Right').typedText('4');
+        assert.equal(mq.latex(), '1x_{2a}3+y^{4b}+z_a^b+w');
+
+        mq.keystroke('Right Right').typedText('5');
+        assert.equal(mq.latex(), '1x_{2a}3+y^{4b}5+z_a^b+w');
+
+        mq.keystroke('Right Right Right').typedText('6');
+        assert.equal(mq.latex(), '1x_{2a}3+y^{4b}5+z_a^{6b}+w');
+
+        mq.keystroke('Right Right').typedText('7');
+        assert.equal(mq.latex(), '1x_{2a}3+y^{4b}5+z_a^{6b}7+w');
+      });
+
+      test('nthroot', function() {
+        mq.latex('\\sqrt[n]{x}');
+        assert.equal(mq.latex(), '\\sqrt[n]{x}');
+
+        mq.moveToLeftEnd().typedText('1');
+        assert.equal(mq.latex(), '1\\sqrt[n]{x}');
+
+        mq.keystroke('Right').typedText('2');
+        assert.equal(mq.latex(), '1\\sqrt[2n]{x}');
+
+        mq.keystroke('Right Right').typedText('3');
+        assert.equal(mq.latex(), '1\\sqrt[2n]{3x}');
+
+        mq.keystroke('Right Right').typedText('4');
+        assert.equal(mq.latex(), '1\\sqrt[2n]{3x}4');
+      });
+    });
+  });
+
+  suite('sumStartsWithNEquals', function() {
+    test('sum defaults to empty limits', function() {
+      var mq = MQ.MathField($('<span>').appendTo('#mock')[0]);
+      assert.equal(mq.latex(), '');
+
+      mq.cmd('\\sum');
+      assert.equal(mq.latex(), '\\sum_{ }^{ }');
+
+      mq.cmd('n');
+      assert.equal(mq.latex(), '\\sum_n^{ }', 'cursor in lower limit');
+
+      $(mq.el()).remove();
+    });
+    test('sum starts with `n=`', function() {
+      var mq = MQ.MathField($('<span>').appendTo('#mock')[0], {
+        sumStartsWithNEquals: true
+      });
+      assert.equal(mq.latex(), '');
+
+      mq.cmd('\\sum');
+      assert.equal(mq.latex(), '\\sum_{n=}^{ }');
+
+      mq.cmd('0');
+      assert.equal(mq.latex(), '\\sum_{n=0}^{ }', 'cursor after the `n=`');
+
+      $(mq.el()).remove();
+    });
+  });
+
+  suite('substituteTextarea', function() {
+    test('doesn\'t blow up on selection', function() {
+      var mq = MQ.MathField($('<span>').appendTo('#mock')[0], {
+        substituteTextarea: function() {
+          return $('<span tabindex=0 style="display:inline-block;width:1px;height:1px" />')[0];
+        }
+      });
+
+      assert.equal(mq.latex(), '');
+      mq.write('asdf');
+      mq.select();
+
+      $(mq.el()).remove();
+    });
+  });
+});
 suite('key', function() {
   var el;
   var Event = jQuery.Event
-
-  function shouldNotBeCalled() {
-    assert.ok(false, 'this function should not be called');
-  }
 
   function supportsSelectionAPI() {
     return 'selectionStart' in el[0];
@@ -4374,15 +6815,16 @@ suite('key', function() {
 
   test('normal keys', function(done) {
     var counter = 0;
-    manageTextarea(el, {
-      text: function(text, keydown, keypress) {
+    saneKeyboardEvents(el, {
+      keystroke: noop,
+      typedText: function(text, keydown, keypress) {
         counter += 1;
         assert.ok(counter <= 1, 'callback is only called once');
         assert.equal(text, 'a', 'text comes back as a');
         assert.equal(el.val(), '', 'the textarea remains empty');
 
         done();
-      },
+      }
     });
 
     el.trigger(Event('keydown', { which: 97 }));
@@ -4393,15 +6835,14 @@ suite('key', function() {
   test('one keydown only', function(done) {
     var counter = 0;
 
-    manageTextarea(el, {
-      key: function(key, evt) {
+    saneKeyboardEvents(el, {
+      keystroke: function(key, evt) {
         counter += 1;
         assert.ok(counter <= 1, 'callback is called only once');
         assert.equal(key, 'Backspace', 'key is correctly set');
 
         done();
-      },
-      text: shouldNotBeCalled
+      }
     });
 
     el.trigger(Event('keydown', { which: 8 }));
@@ -4410,8 +6851,8 @@ suite('key', function() {
   test('a series of keydowns only', function(done) {
     var counter = 0;
 
-    manageTextarea(el, {
-      key: function(key, keydown) {
+    saneKeyboardEvents(el, {
+      keystroke: function(key, keydown) {
         counter += 1;
         assert.ok(counter <= 3, 'callback is called at most 3 times');
 
@@ -4419,8 +6860,7 @@ suite('key', function() {
         assert.equal(key, 'Left');
 
         if (counter === 3) done();
-      },
-      text: shouldNotBeCalled
+      }
     });
 
     el.trigger(Event('keydown', { which: 37 }));
@@ -4431,8 +6871,8 @@ suite('key', function() {
   test('one keydown and a series of keypresses', function(done) {
     var counter = 0;
 
-    manageTextarea(el, {
-      key: function(key, keydown) {
+    saneKeyboardEvents(el, {
+      keystroke: function(key, keydown) {
         counter += 1;
         assert.ok(counter <= 3, 'callback is called at most 3 times');
 
@@ -4440,8 +6880,7 @@ suite('key', function() {
         assert.equal(key, 'Backspace');
 
         if (counter === 3) done();
-      },
-      text: shouldNotBeCalled
+      }
     });
 
     el.trigger(Event('keydown', { which: 8 }));
@@ -4451,12 +6890,10 @@ suite('key', function() {
   });
 
   suite('select', function() {
-    test('select populates the textarea but doesn\'t call text', function() {
-      var manager = manageTextarea(el, {
-        text: shouldNotBeCalled,
-      });
+    test('select populates the textarea but doesn\'t call .typedText()', function() {
+      var shim = saneKeyboardEvents(el, { keystroke: noop });
 
-      manager.select('foobar');
+      shim.select('foobar');
 
       assert.equal(el.val(), 'foobar');
       el.trigger('keydown');
@@ -4473,9 +6910,9 @@ suite('key', function() {
     test('select populates the textarea but doesn\'t call text' +
          ' on keydown, even when the selection is not properly' +
          ' detectable', function() {
-      var manager = manageTextarea(el, { text: shouldNotBeCalled });
+      var shim = saneKeyboardEvents(el, { keystroke: noop });
 
-      manager.select('foobar');
+      shim.select('foobar');
       // monkey-patch the dom-level selection so that hasSelection()
       // returns false, as in IE < 9.
       el[0].selectionStart = el[0].selectionEnd = 0;
@@ -4485,11 +6922,9 @@ suite('key', function() {
     });
 
     test('blurring', function() {
-      var manager = manageTextarea(el, {
-        text: shouldNotBeCalled,
-      });
+      var shim = saneKeyboardEvents(el, { keystroke: noop });
 
-      manager.select('foobar');
+      shim.select('foobar');
       el.trigger('blur');
       el.focus();
 
@@ -4502,31 +6937,76 @@ suite('key', function() {
       assert.equal(el.val(), 'foobar', 'it still has content');
     });
 
+    test('blur then empty selection', function() {
+      var shim = saneKeyboardEvents(el, { keystroke: noop });
+      shim.select('foobar');
+      el.blur();
+      shim.select('');
+      assert.ok(document.activeElement !== el[0], 'textarea remains blurred');
+    });
+
+    if (!document.hasFocus()) {
+      test('blur in keystroke handler: DOCUMENT NEEDS FOCUS, SEE CONSOLE ');
+      console.warn(
+        'The test "blur in keystroke handler" needs the document to have ' +
+        'focus. Only when the document has focus does .select() on an ' +
+        'element also focus it, which is part of the problematic behavior ' +
+        'we are testing robustness against. (Specifically, erroneously ' +
+        'calling .select() in a timeout after the textarea has blurred, ' +
+        '"stealing back" focus.)\n' +
+        'Normally, the page being open and focused is enough to have focus, ' +
+        'but with the Developer Tools open, it depends on whether you last ' +
+        'clicked on something in the Developer Tools or on the page itself. ' +
+        'Click the page, or close the Developer Tools, and Refresh.'
+      );
+    }
+    else {
+      test('blur in keystroke handler', function(done) {
+        var shim = saneKeyboardEvents(el, {
+          keystroke: function(key) {
+            assert.equal(key, 'Left');
+            el.blur();
+          }
+        });
+
+        shim.select('foobar');
+        assert.ok(document.activeElement === el[0], 'textarea focused');
+
+        el.trigger(Event('keydown', { which: 37 }));
+        assert.ok(document.activeElement !== el[0], 'textarea blurred');
+
+        setTimeout(function() {
+          assert.ok(document.activeElement !== el[0], 'textarea remains blurred');
+          done();
+        });
+      });
+    }
+
     suite('selected text after keypress or paste doesn\'t get mistaken' +
          ' for inputted text', function() {
       test('select() immediately after paste', function() {
         var pastedText;
         var onPaste = function(text) { pastedText = text; };
-        var manager = manageTextarea(el, {
+        var shim = saneKeyboardEvents(el, {
           paste: function(text) { onPaste(text); }
         });
 
         el.trigger('paste').val('$x^2+1$');
 
-        manager.select('$\\frac{x^2+1}{2}$');
+        shim.select('$\\frac{x^2+1}{2}$');
         assert.equal(pastedText, '$x^2+1$');
         assert.equal(el.val(), '$\\frac{x^2+1}{2}$');
 
-        onPaste = shouldNotBeCalled;
+        onPaste = null;
 
-        manager.select('$2$');
+        shim.select('$2$');
         assert.equal(el.val(), '$2$');
       });
 
       test('select() after paste/input', function() {
         var pastedText;
         var onPaste = function(text) { pastedText = text; };
-        var manager = manageTextarea(el, {
+        var shim = saneKeyboardEvents(el, {
           paste: function(text) { onPaste(text); }
         });
 
@@ -4536,41 +7016,43 @@ suite('key', function() {
         assert.equal(pastedText, '$x^2+1$');
         assert.equal(el.val(), '');
 
-        onPaste = shouldNotBeCalled;
+        onPaste = null;
 
-        manager.select('$\\frac{x^2+1}{2}$');
+        shim.select('$\\frac{x^2+1}{2}$');
         assert.equal(el.val(), '$\\frac{x^2+1}{2}$');
 
-        manager.select('$2$');
+        shim.select('$2$');
         assert.equal(el.val(), '$2$');
       });
 
       test('select() immediately after keydown/keypress', function() {
         var typedText;
         var onText = function(text) { typedText = text; };
-        var manager = manageTextarea(el, {
-          text: function(text) { onText(text); }
+        var shim = saneKeyboardEvents(el, {
+          keystroke: noop,
+          typedText: function(text) { onText(text); }
         });
 
         el.trigger(Event('keydown', { which: 97 }));
         el.trigger(Event('keypress', { which: 97 }));
         el.val('a');
 
-        manager.select('$\\frac{a}{2}$');
+        shim.select('$\\frac{a}{2}$');
         assert.equal(typedText, 'a');
         assert.equal(el.val(), '$\\frac{a}{2}$');
 
-        onText = shouldNotBeCalled;
+        onText = null;
 
-        manager.select('$2$');
+        shim.select('$2$');
         assert.equal(el.val(), '$2$');
       });
 
       test('select() after keydown/keypress/input', function() {
         var typedText;
         var onText = function(text) { typedText = text; };
-        var manager = manageTextarea(el, {
-          text: function(text) { onText(text); }
+        var shim = saneKeyboardEvents(el, {
+          keystroke: noop,
+          typedText: function(text) { onText(text); }
         });
 
         el.trigger(Event('keydown', { which: 97 }));
@@ -4580,21 +7062,88 @@ suite('key', function() {
         el.trigger('input');
         assert.equal(typedText, 'a');
 
-        onText = shouldNotBeCalled;
+        onText = null;
 
-        manager.select('$\\frac{a}{2}$');
+        shim.select('$\\frac{a}{2}$');
         assert.equal(el.val(), '$\\frac{a}{2}$');
 
-        manager.select('$2$');
+        shim.select('$2$');
         assert.equal(el.val(), '$2$');
+      });
+
+      suite('unrecognized keys that move cursor and clear selection', function() {
+        test('without keypress', function() {
+          var shim = saneKeyboardEvents(el, { keystroke: noop });
+
+          shim.select('a');
+          assert.equal(el.val(), 'a');
+
+          if (!supportsSelectionAPI()) return;
+
+          el.trigger(Event('keydown', { which: 37, altKey: true }));
+          el[0].selectionEnd = 0;
+          el.trigger(Event('keyup', { which: 37, altKey: true }));
+          assert.ok(el[0].selectionStart !== el[0].selectionEnd);
+
+          el.blur();
+          shim.select('');
+          assert.ok(document.activeElement !== el[0], 'textarea remains blurred');
+        });
+
+        test('with keypress, many characters selected', function() {
+          var shim = saneKeyboardEvents(el, { keystroke: noop });
+
+          shim.select('many characters');
+          assert.equal(el.val(), 'many characters');
+
+          if (!supportsSelectionAPI()) return;
+
+          el.trigger(Event('keydown', { which: 37, altKey: true }));
+          el.trigger(Event('keypress', { which: 37, altKey: true }));
+          el[0].selectionEnd = 0;
+
+          el.trigger('keyup');
+          assert.ok(el[0].selectionStart !== el[0].selectionEnd);
+
+          el.blur();
+          shim.select('');
+          assert.ok(document.activeElement !== el[0], 'textarea remains blurred');
+        });
+
+        test('with keypress, only 1 character selected', function() {
+          var count = 0;
+          var shim = saneKeyboardEvents(el, {
+            keystroke: noop,
+            typedText: function(ch) {
+              assert.equal(ch, 'a');
+              assert.equal(el.val(), '');
+              count += 1;
+            }
+          });
+
+          shim.select('a');
+          assert.equal(el.val(), 'a');
+
+          if (!supportsSelectionAPI()) return;
+
+          el.trigger(Event('keydown', { which: 37, altKey: true }));
+          el.trigger(Event('keypress', { which: 37, altKey: true }));
+          el[0].selectionEnd = 0;
+
+          el.trigger('keyup');
+          assert.equal(count, 1);
+
+          el.blur();
+          shim.select('');
+          assert.ok(document.activeElement !== el[0], 'textarea remains blurred');
+        });
       });
     });
   });
 
   suite('paste', function() {
     test('paste event only', function(done) {
-      manageTextarea(el, {
-        text: shouldNotBeCalled,
+      saneKeyboardEvents(el, {
         paste: function(text) {
           assert.equal(text, '$x^2+1$');
 
@@ -4607,8 +7156,8 @@ suite('key', function() {
     });
 
     test('paste after keydown/keypress', function(done) {
-      manageTextarea(el, {
-        text: shouldNotBeCalled,
+      saneKeyboardEvents(el, {
+        keystroke: noop,
         paste: function(text) {
           assert.equal(text, 'foobar');
           done();
@@ -4624,8 +7173,8 @@ suite('key', function() {
     });
 
     test('paste after keydown/keypress/input', function(done) {
-      manageTextarea(el, {
-        text: shouldNotBeCalled,
+      saneKeyboardEvents(el, {
+        keystroke: noop,
         paste: function(text) {
           assert.equal(text, 'foobar');
           done();
@@ -4642,8 +7191,8 @@ suite('key', function() {
     });
 
     test('keypress timeout happening before paste timeout', function(done) {
-      manageTextarea(el, {
-        text: shouldNotBeCalled,
+      saneKeyboardEvents(el, {
+        keystroke: noop,
         paste: function(text) {
           assert.equal(text, 'foobar');
           done();
@@ -4659,6 +7208,158 @@ suite('key', function() {
       // before the paste timeout happens.
       el.trigger('input');
     });
+  });
+});
+suite('Cursor::select()', function() {
+  var cursor = Cursor();
+  cursor.selectionChanged = noop;
+
+  function assertSelection(A, B, leftEnd, rightEnd) {
+    var lca = leftEnd.parent, frag = Fragment(leftEnd, rightEnd || leftEnd);
+
+    (function eitherOrder(A, B) {
+
+      var count = 0;
+      lca.selectChildren = function(leftEnd, rightEnd) {
+        count += 1;
+        assert.equal(frag.ends[L], leftEnd);
+        assert.equal(frag.ends[R], rightEnd);
+        return Node.p.selectChildren.apply(this, arguments);
+      };
+
+      Point.p.init.call(cursor, A.parent, A[L], A[R]);
+      cursor.startSelection();
+      Point.p.init.call(cursor, B.parent, B[L], B[R]);
+      assert.equal(cursor.select(), true);
+      assert.equal(count, 1);
+
+      return eitherOrder;
+    }(A, B)(B, A));
+  }
+
+  var parent = Node();
+  var child1 = Node().adopt(parent, parent.ends[R], 0);
+  var child2 = Node().adopt(parent, parent.ends[R], 0);
+  var child3 = Node().adopt(parent, parent.ends[R], 0);
+  var A = Point(parent, 0, child1);
+  var B = Point(parent, child1, child2);
+  var C = Point(parent, child2, child3);
+  var D = Point(parent, child3, 0);
+  var pt1 = Point(child1, 0, 0);
+  var pt2 = Point(child2, 0, 0);
+  var pt3 = Point(child3, 0, 0);
+
+  test('same parent, one Node', function() {
+    assertSelection(A, B, child1);
+    assertSelection(B, C, child2);
+    assertSelection(C, D, child3);
+  });
+
+  test('same Parent, many Nodes', function() {
+    assertSelection(A, C, child1, child2);
+    assertSelection(A, D, child1, child3);
+    assertSelection(B, D, child2, child3);
+  });
+
+  test('Point next to parent of other Point', function() {
+    assertSelection(A, pt1, child1);
+    assertSelection(B, pt1, child1);
+
+    assertSelection(B, pt2, child2);
+    assertSelection(C, pt2, child2);
+
+    assertSelection(C, pt3, child3);
+    assertSelection(D, pt3, child3);
+  });
+
+  test('Points\' parents are siblings', function() {
+    assertSelection(pt1, pt2, child1, child2);
+    assertSelection(pt2, pt3, child2, child3);
+    assertSelection(pt1, pt3, child1, child3);
+  });
+
+  test('Point is sibling of parent of other Point', function() {
+    assertSelection(A, pt2, child1, child2);
+    assertSelection(A, pt3, child1, child3);
+    assertSelection(B, pt3, child2, child3);
+    assertSelection(pt1, D, child1, child3);
+    assertSelection(pt1, C, child1, child2);
+  });
+
+  test('same Point', function() {
+    Point.p.init.call(cursor, A.parent, A[L], A[R]);
+    cursor.startSelection();
+    assert.equal(cursor.select(), false);
+  });
+
+  test('different trees', function() {
+    var anotherTree = Node();
+
+    Point.p.init.call(cursor, A.parent, A[L], A[R]);
+    cursor.startSelection();
+    Point.p.init.call(cursor, anotherTree, 0, 0);
+    assert.throws(function() { cursor.select(); });
+
+    Point.p.init.call(cursor, anotherTree, 0, 0);
+    cursor.startSelection();
+    Point.p.init.call(cursor, A.parent, A[L], A[R]);
+    assert.throws(function() { cursor.select(); });
+  });
+});
+suite('text', function() {
+
+  function fromLatex(latex) {
+    var block = latexMathParser.parse(latex);
+    block.jQize();
+
+    return block;
+  }
+
+  function assertSplit(jQ, prev, next) {
+    var dom = jQ[0];
+
+    if (prev) {
+      assert.ok(dom.previousSibling instanceof Text);
+      assert.equal(prev, dom.previousSibling.data);
+    }
+    else {
+      assert.ok(!dom.previousSibling);
+    }
+
+    if (next) {
+      assert.ok(dom.nextSibling instanceof Text);
+      assert.equal(next, dom.nextSibling.data);
+    }
+    else {
+      assert.ok(!dom.nextSibling);
+    }
+  }
+
+  test('changes the text nodes as the cursor moves around', function() {
+    var block = fromLatex('\\text{abc}');
+    var ctrlr = Controller(block, 0, 0);
+    var cursor = ctrlr.cursor.insAtRightEnd(block);
+
+    ctrlr.moveLeft();
+    assertSplit(cursor.jQ, 'abc', null);
+
+    ctrlr.moveLeft();
+    assertSplit(cursor.jQ, 'ab', 'c');
+
+    ctrlr.moveLeft();
+    assertSplit(cursor.jQ, 'a', 'bc');
+
+    ctrlr.moveLeft();
+    assertSplit(cursor.jQ, null, 'abc');
+
+    ctrlr.moveRight();
+    assertSplit(cursor.jQ, 'a', 'bc');
+
+    ctrlr.moveRight();
+    assertSplit(cursor.jQ, 'ab', 'c');
+
+    ctrlr.moveRight();
+    assertSplit(cursor.jQ, 'abc', null);
   });
 });
 suite('tree', function() {
@@ -4837,6 +7538,23 @@ suite('tree', function() {
       }, 'half-empty on the left');
     });
 
+    test('directionalized constructor call', function() {
+      var ChNode = P(Node, { init: function(ch) { this.ch = ch; } });
+      var parent = Node();
+      var a = ChNode('a').adopt(parent, parent.ends[R], 0);
+      var b = ChNode('b').adopt(parent, parent.ends[R], 0);
+      var c = ChNode('c').adopt(parent, parent.ends[R], 0);
+      var d = ChNode('d').adopt(parent, parent.ends[R], 0);
+      var e = ChNode('e').adopt(parent, parent.ends[R], 0);
+
+      function cat(str, node) { return str + node.ch; }
+      assert.equal('bcd', Fragment(b, d).fold('', cat));
+      assert.equal('bcd', Fragment(b, d, L).fold('', cat));
+      assert.equal('bcd', Fragment(d, b, R).fold('', cat));
+      assert.throws(function() { Fragment(d, b, L); });
+      assert.throws(function() { Fragment(b, d, R); });
+    });
+
     test('disown is idempotent', function() {
       var parent = Node();
       var one = Node().adopt(parent, 0, 0);
@@ -4848,95 +7566,1136 @@ suite('tree', function() {
     });
   });
 });
-suite('up/down', function() {
-  var el, rootBlock, cursor;
+suite('typing with auto-replaces', function() {
+  var mq;
   setup(function() {
-    el = $('<span></span>').appendTo('#mock').mathquill();
-    rootBlock = MathElement[el.attr(mqBlockId)];
-    cursor = rootBlock.cursor;
+    mq = MQ.MathField($('<span></span>').appendTo('#mock')[0]);
   });
   teardown(function() {
-    el.remove();
+    $(mq.el()).remove();
   });
 
-  function move(dirs) {
-    // like, move('Left Left Left Up')
-    dirs = dirs.split(' ');
-    for (var i in dirs) {
-      var dir = dirs[i];
-      cursor['move'+dir]();
-    }
+  function prayWellFormedPoint(pt) { prayWellFormed(pt.parent, pt[L], pt[R]); }
+  function assertLatex(latex) {
+    prayWellFormedPoint(mq.__controller.cursor);
+    assert.equal(mq.latex(), latex);
   }
 
+  suite('LiveFraction', function() {
+    test('full MathQuill', function() {
+      mq.typedText('1/2').keystroke('Tab').typedText('+sinx/');
+      assertLatex('\\frac{1}{2}+\\frac{\\sin x}{ }');
+      mq.latex('').typedText('1+/2');
+      assertLatex('1+\\frac{2}{ }');
+      mq.latex('').typedText('1 2/3');
+      assertLatex('1\\ \\frac{2}{3}');
+    });
+
+    test('mathquill-basic', function() {
+      var mq_basic = MQBasic.MathField($('<span></span>').appendTo('#mock')[0]);
+      mq_basic.typedText('1/2');
+      assert.equal(mq_basic.latex(), '\\frac{1}{2}');
+      $(mq_basic.el()).remove();
+    });
+  });
+
+  suite('LatexCommandInput', function() {
+    test('basic', function() {
+      mq.typedText('\\sqrt-x');
+      assertLatex('\\sqrt{-x}');
+    });
+
+    test('they\'re passed their name', function() {
+      mq.cmd('\\alpha');
+      assert.equal(mq.latex(), '\\alpha');
+    });
+
+    test('replaces selection', function() {
+      mq.typedText('49').select().typedText('\\sqrt').keystroke('Enter');
+      assertLatex('\\sqrt{49}');
+    });
+
+    test('auto-operator names', function() {
+      mq.typedText('\\sin^2');
+      assertLatex('\\sin^2');
+    });
+
+    test('nonexistent LaTeX command', function() {
+      mq.typedText('\\asdf+');
+      assertLatex('\\text{asdf}+');
+    });
+  });
+
+  suite('auto-expanding parens', function() {
+    suite('simple', function() {
+      test('empty parens ()', function() {
+        mq.typedText('(');
+        assertLatex('\\left(\\right)');
+        mq.typedText(')');
+        assertLatex('\\left(\\right)');
+      });
+
+      test('straight typing 1+(2+3)+4', function() {
+        mq.typedText('1+(2+3)+4');
+        assertLatex('1+\\left(2+3\\right)+4');
+      });
+
+      test('basic command \\sin(', function () {
+        mq.typedText('\\sin(');
+        assertLatex('\\sin\\left(\\right)');
+      });
+
+      test('wrapping things in parens 1+(2+3)+4', function() {
+        mq.typedText('1+2+3+4');
+        assertLatex('1+2+3+4');
+        mq.keystroke('Left Left').typedText(')');
+        assertLatex('\\left(1+2+3\\right)+4');
+        mq.keystroke('Left Left Left Left').typedText('(');
+        assertLatex('1+\\left(2+3\\right)+4');
+      });
+
+      test('nested parens 1+(2+(3+4)+5)+6', function() {
+        mq.typedText('1+(2+(3+4)+5)+6');
+        assertLatex('1+\\left(2+\\left(3+4\\right)+5\\right)+6');
+      });
+    });
+
+    suite('mismatched brackets', function() {
+      test('empty mismatched brackets (] and [}', function() {
+        mq.typedText('(');
+        assertLatex('\\left(\\right)');
+        mq.typedText(']');
+        assertLatex('\\left(\\right]');
+        mq.typedText('[');
+        assertLatex('\\left(\\right]\\left[\\right]');
+        mq.typedText('}');
+        assertLatex('\\left(\\right]\\left[\\right\\}');
+      });
+
+      test('typing mismatched brackets 1+(2+3]+4', function() {
+        mq.typedText('1+');
+        assertLatex('1+');
+        mq.typedText('(');
+        assertLatex('1+\\left(\\right)');
+        mq.typedText('2+3');
+        assertLatex('1+\\left(2+3\\right)');
+        mq.typedText(']+4');
+        assertLatex('1+\\left(2+3\\right]+4');
+      });
+
+      test('wrapping things in mismatched brackets 1+(2+3]+4', function() {
+        mq.typedText('1+2+3+4');
+        assertLatex('1+2+3+4');
+        mq.keystroke('Left Left').typedText(']');
+        assertLatex('\\left[1+2+3\\right]+4');
+        mq.keystroke('Left Left Left Left').typedText('(');
+        assertLatex('1+\\left(2+3\\right]+4');
+      });
+
+      test('nested mismatched brackets 1+(2+[3+4)+5]+6', function() {
+        mq.typedText('1+(2+[3+4)+5]+6');
+        assertLatex('1+\\left(2+\\left[3+4\\right)+5\\right]+6');
+      });
+
+      suite('restrictMismatchedBrackets', function() {
+        setup(function() {
+          mq.config({ restrictMismatchedBrackets: true });
+        });
+        test('typing (|x|+1) works', function() {
+          mq.typedText('(|x|+1)');
+          assertLatex('\\left(\\left|x\\right|+1\\right)');
+        });
+        test('typing [x} becomes [{x}]', function() {
+          mq.typedText('[x}');
+          assertLatex('\\left[\\left\\{x\\right\\}\\right]');
+        });
+        test('normal matching pairs {f(n), [a,b]} work', function() {
+          mq.typedText('{f(n), [a,b]}');
+          assertLatex('\\left\\{f\\left(n\\right),\\ \\left[a,b\\right]\\right\\}');
+        });
+        test('[a,b) and (a,b] still work', function() {
+          mq.typedText('[a,b) + (a,b]');
+          assertLatex('\\left[a,b\\right)\\ +\\ \\left(a,b\\right]');
+        });
+      });
+    });
+
+    suite('pipes', function() {
+      test('empty pipes ||', function() {
+        mq.typedText('|');
+        assertLatex('\\left|\\right|');
+        mq.typedText('|');
+        assertLatex('\\left|\\right|');
+      });
+
+      test('straight typing 1+|2+3|+4', function() {
+        mq.typedText('1+|2+3|+4');
+        assertLatex('1+\\left|2+3\\right|+4');
+      });
+
+      test('wrapping things in pipes 1+|2+3|+4', function() {
+        mq.typedText('1+2+3+4');
+        assertLatex('1+2+3+4');
+        mq.keystroke('Home Right Right').typedText('|');
+        assertLatex('1+\\left|2+3+4\\right|');
+        mq.keystroke('Right Right Right').typedText('|');
+        assertLatex('1+\\left|2+3\\right|+4');
+      });
+
+      suite('can type mismatched paren/pipe group from any side', function() {
+        suite('straight typing', function() {
+          test('|)', function() {
+            mq.typedText('|)');
+            assertLatex('\\left|\\right)');
+          });
+
+          test('(|', function() {
+            mq.typedText('(|');
+            assertLatex('\\left(\\right|');
+          });
+        });
+
+        suite('the other direction', function() {
+          test('|)', function() {
+            mq.typedText(')');
+            assertLatex('\\left(\\right)');
+            mq.keystroke('Left').typedText('|');
+            assertLatex('\\left|\\right)');
+          });
+
+          test('(|', function() {
+            mq.typedText('||');
+            assertLatex('\\left|\\right|');
+            mq.keystroke('Left Left Del');
+            assertLatex('\\left|\\right|');
+            mq.typedText('(');
+            assertLatex('\\left(\\right|');
+          });
+        });
+      });
+    });
+
+    suite('backspacing', backspacingTests);
+
+    suite('backspacing with restrictMismatchedBrackets', function() {
+      setup(function() {
+        mq.config({ restrictMismatchedBrackets: true });
+      });
+
+      backspacingTests();
+    });
+
+    function backspacingTests() {
+      test('typing then backspacing a close-paren in the middle of 1+2+3+4', function() {
+        mq.typedText('1+2+3+4');
+        assertLatex('1+2+3+4');
+        mq.keystroke('Left Left').typedText(')');
+        assertLatex('\\left(1+2+3\\right)+4');
+        mq.keystroke('Backspace');
+        assertLatex('1+2+3+4');
+      });
+
+      test('backspacing close-paren then open-paren of 1+(2+3)+4', function() {
+        mq.typedText('1+(2+3)+4');
+        assertLatex('1+\\left(2+3\\right)+4');
+        mq.keystroke('Left Left Backspace');
+        assertLatex('1+\\left(2+3+4\\right)');
+        mq.keystroke('Left Left Left Backspace');
+        assertLatex('1+2+3+4');
+      });
+
+      test('backspacing open-paren of 1+(2+3)+4', function() {
+        mq.typedText('1+(2+3)+4');
+        assertLatex('1+\\left(2+3\\right)+4');
+        mq.keystroke('Left Left Left Left Left Left Backspace');
+        assertLatex('1+2+3+4');
+      });
+
+      test('backspacing close-bracket then open-paren of 1+(2+3]+4', function() {
+        mq.typedText('1+(2+3]+4');
+        assertLatex('1+\\left(2+3\\right]+4');
+        mq.keystroke('Left Left Backspace');
+        assertLatex('1+\\left(2+3+4\\right)');
+        mq.keystroke('Left Left Left Backspace');
+        assertLatex('1+2+3+4');
+      });
+
+      test('backspacing open-paren of 1+(2+3]+4', function() {
+        mq.typedText('1+(2+3]+4');
+        assertLatex('1+\\left(2+3\\right]+4');
+        mq.keystroke('Left Left Left Left Left Left Backspace');
+        assertLatex('1+2+3+4');
+      });
+
+
+      test('backspacing close-bracket then open-paren of 1+(2+3] (nothing after paren group)', function() {
+        mq.typedText('1+(2+3]');
+        assertLatex('1+\\left(2+3\\right]');
+        mq.keystroke('Backspace');
+        assertLatex('1+\\left(2+3\\right)');
+        mq.keystroke('Left Left Left Backspace');
+        assertLatex('1+2+3');
+      });
+
+      test('backspacing open-paren of 1+(2+3] (nothing after paren group)', function() {
+        mq.typedText('1+(2+3]');
+        assertLatex('1+\\left(2+3\\right]');
+        mq.keystroke('Left Left Left Left Backspace');
+        assertLatex('1+2+3');
+      });
+
+      test('backspacing close-bracket then open-paren of (2+3]+4 (nothing before paren group)', function() {
+        mq.typedText('(2+3]+4');
+        assertLatex('\\left(2+3\\right]+4');
+        mq.keystroke('Left Left Backspace');
+        assertLatex('\\left(2+3+4\\right)');
+        mq.keystroke('Left Left Left Backspace');
+        assertLatex('2+3+4');
+      });
+
+      test('backspacing open-paren of (2+3]+4 (nothing before paren group)', function() {
+        mq.typedText('(2+3]+4');
+        assertLatex('\\left(2+3\\right]+4');
+        mq.keystroke('Left Left Left Left Left Left Backspace');
+        assertLatex('2+3+4');
+      });
+
+      function assertParenBlockNonEmpty() {
+        var parenBlock = $(mq.el()).find('.mq-paren+span');
+        assert.equal(parenBlock.length, 1, 'exactly 1 paren block');
+        assert.ok(!parenBlock.hasClass('mq-empty'),
+                  'paren block auto-expanded, should no longer be gray');
+      }
+
+      test('backspacing close-bracket then open-paren of 1+(]+4 (empty paren group)', function() {
+        mq.typedText('1+(]+4');
+        assertLatex('1+\\left(\\right]+4');
+        mq.keystroke('Left Left Backspace');
+        assertLatex('1+\\left(+4\\right)');
+        assertParenBlockNonEmpty();
+        mq.keystroke('Backspace');
+        assertLatex('1++4');
+      });
+
+      test('backspacing open-paren of 1+(]+4 (empty paren group)', function() {
+        mq.typedText('1+(]+4');
+        assertLatex('1+\\left(\\right]+4');
+        mq.keystroke('Left Left Left Backspace');
+        assertLatex('1++4');
+      });
+
+      test('backspacing close-bracket then open-paren of 1+(] (empty paren group, nothing after)', function() {
+        mq.typedText('1+(]');
+        assertLatex('1+\\left(\\right]');
+        mq.keystroke('Backspace');
+        assertLatex('1+\\left(\\right)');
+        mq.keystroke('Backspace');
+        assertLatex('1+');
+      });
+
+      test('backspacing open-paren of 1+(] (empty paren group, nothing after)', function() {
+        mq.typedText('1+(]');
+        assertLatex('1+\\left(\\right]');
+        mq.keystroke('Left Backspace');
+        assertLatex('1+');
+      });
+
+      test('backspacing close-bracket then open-paren of (]+4 (empty paren group, nothing before)', function() {
+        mq.typedText('(]+4');
+        assertLatex('\\left(\\right]+4');
+        mq.keystroke('Left Left Backspace');
+        assertLatex('\\left(+4\\right)');
+        assertParenBlockNonEmpty();
+        mq.keystroke('Backspace');
+        assertLatex('+4');
+      });
+
+      test('backspacing open-paren of (]+4 (empty paren group, nothing before)', function() {
+        mq.typedText('(]+4');
+        assertLatex('\\left(\\right]+4');
+        mq.keystroke('Left Left Left Backspace');
+        assertLatex('+4');
+      });
+
+      test('rendering mismatched brackets 1+(2+3]+4 from LaTeX then backspacing close-bracket then open-paren', function() {
+        mq.latex('1+\\left(2+3\\right]+4');
+        assertLatex('1+\\left(2+3\\right]+4');
+        mq.keystroke('Left Left Backspace');
+        assertLatex('1+\\left(2+3+4\\right)');
+        mq.keystroke('Left Left Left Backspace');
+        assertLatex('1+2+3+4');
+      });
+
+      test('rendering mismatched brackets 1+(2+3]+4 from LaTeX then backspacing open-paren', function() {
+        mq.latex('1+\\left(2+3\\right]+4');
+        assertLatex('1+\\left(2+3\\right]+4');
+        mq.keystroke('Left Left Left Left Left Left Backspace');
+        assertLatex('1+2+3+4');
+      });
+
+      test('rendering paren group 1+(2+3)+4 from LaTeX then backspacing close-paren then open-paren', function() {
+        mq.latex('1+\\left(2+3\\right)+4');
+        assertLatex('1+\\left(2+3\\right)+4');
+        mq.keystroke('Left Left Backspace');
+        assertLatex('1+\\left(2+3+4\\right)');
+        mq.keystroke('Left Left Left Backspace');
+        assertLatex('1+2+3+4');
+      });
+
+      test('rendering paren group 1+(2+3)+4 from LaTeX then backspacing open-paren', function() {
+        mq.latex('1+\\left(2+3\\right)+4');
+        assertLatex('1+\\left(2+3\\right)+4');
+        mq.keystroke('Left Left Left Left Left Left Backspace');
+        assertLatex('1+2+3+4');
+      });
+
+      test('wrapping selection in parens 1+(2+3)+4 then backspacing close-paren then open-paren', function() {
+        mq.typedText('1+2+3+4');
+        assertLatex('1+2+3+4');
+        mq.keystroke('Left Left Shift-Left Shift-Left Shift-Left').typedText(')');
+        assertLatex('1+\\left(2+3\\right)+4');
+        mq.keystroke('Backspace');
+        assertLatex('1+\\left(2+3+4\\right)');
+        mq.keystroke('Left Left Left Backspace');
+        assertLatex('1+2+3+4');
+      });
+
+      test('wrapping selection in parens 1+(2+3)+4 then backspacing open-paren', function() {
+        mq.typedText('1+2+3+4');
+        assertLatex('1+2+3+4');
+        mq.keystroke('Left Left Shift-Left Shift-Left Shift-Left').typedText('(');
+        assertLatex('1+\\left(2+3\\right)+4');
+        mq.keystroke('Backspace');
+        assertLatex('1+2+3+4');
+      });
+
+      test('backspacing close-bracket of 1+(2+3] (nothing after) then typing', function() {
+        mq.typedText('1+(2+3]');
+        assertLatex('1+\\left(2+3\\right]');
+        mq.keystroke('Backspace');
+        assertLatex('1+\\left(2+3\\right)');
+        mq.typedText('+4');
+        assertLatex('1+\\left(2+3+4\\right)');
+      });
+
+      test('backspacing open-paren of (2+3]+4 (nothing before) then typing', function() {
+        mq.typedText('(2+3]+4');
+        assertLatex('\\left(2+3\\right]+4');
+        mq.keystroke('Home Right Backspace');
+        assertLatex('2+3+4');
+        mq.typedText('1+');
+        assertLatex('1+2+3+4');
+      });
+
+      test('backspacing paren containing a one-sided paren 0+[(1+2)+3]+4', function() {
+        mq.typedText('0+[1+2+3]+4');
+        assertLatex('0+\\left[1+2+3\\right]+4');
+        mq.keystroke('Left Left Left Left Left').typedText(')');
+        assertLatex('0+\\left[\\left(1+2\\right)+3\\right]+4');
+        mq.keystroke('Right Right Right Backspace');
+        assertLatex('0+\\left[1+2\\right)+3+4');
+      });
+
+      test('backspacing paren inside a one-sided paren (0+[1+2]+3)+4', function() {
+        mq.typedText('0+[1+2]+3)+4');
+        assertLatex('\\left(0+\\left[1+2\\right]+3\\right)+4');
+        mq.keystroke('Left Left Left Left Left Backspace');
+        assertLatex('0+\\left[1+2+3\\right)+4');
+      });
+
+      test('backspacing paren containing and inside a one-sided paren (([1+2]))', function() {
+        mq.typedText('(1+2))');
+        assertLatex('\\left(\\left(1+2\\right)\\right)');
+        mq.keystroke('Left Left').typedText(']');
+        assertLatex('\\left(\\left(\\left[1+2\\right]\\right)\\right)');
+        mq.keystroke('Right Backspace');
+        assertLatex('\\left(\\left(1+2\\right]\\right)');
+        mq.keystroke('Backspace');
+        assertLatex('\\left(1+2\\right)');
+      });
+
+      test('auto-expanding calls .siblingCreated() on new siblings 1+((2+3))', function() {
+        mq.typedText('1+((2+3))');
+        assertLatex('1+\\left(\\left(2+3\\right)\\right)');
+        mq.keystroke('Left Left Left Left Left Left Del');
+        assertLatex('1+\\left(\\left(2+3\\right)\\right)');
+        mq.keystroke('Left Left Del');
+        assertLatex('\\left(1+\\left(2+3\\right)\\right)');
+        // now check that the inner open-paren isn't still a ghost
+        mq.keystroke('Right Right Right Right Del');
+        assertLatex('1+\\left(2+3\\right)');
+      });
+
+      test('that unwrapping calls .siblingCreated() on new siblings ((1+2)+(3+4))+5', function() {
+        mq.typedText('(1+2+3+4)+5');
+        assertLatex('\\left(1+2+3+4\\right)+5');
+        mq.keystroke('Home Right Right Right Right').typedText(')');
+        assertLatex('\\left(\\left(1+2\\right)+3+4\\right)+5');
+        mq.keystroke('Right').typedText('(');
+        assertLatex('\\left(\\left(1+2\\right)+\\left(3+4\\right)\\right)+5');
+        mq.keystroke('Right Right Right Right Right Backspace');
+        assertLatex('\\left(1+2\\right)+\\left(3+4\\right)+5');
+        mq.keystroke('Left Left Left Left Backspace');
+        assertLatex('\\left(1+2\\right)+3+4+5');
+      });
+
+      suite('pipes', function() {
+        test('typing then backspacing a pipe in the middle of 1+2+3+4', function() {
+          mq.typedText('1+2+3+4');
+          assertLatex('1+2+3+4');
+          mq.keystroke('Left Left Left').typedText('|');
+          assertLatex('1+2+\\left|3+4\\right|');
+          mq.keystroke('Backspace');
+          assertLatex('1+2+3+4');
+        });
+
+        test('backspacing close-pipe then open-pipe of 1+|2+3|+4', function() {
+          mq.typedText('1+|2+3|+4');
+          assertLatex('1+\\left|2+3\\right|+4');
+          mq.keystroke('Left Left Backspace');
+          assertLatex('1+\\left|2+3+4\\right|');
+          mq.keystroke('Left Left Left Backspace');
+          assertLatex('1+2+3+4');
+        });
+
+        test('backspacing open-pipe of 1+|2+3|+4', function() {
+          mq.typedText('1+|2+3|+4');
+          assertLatex('1+\\left|2+3\\right|+4');
+          mq.keystroke('Left Left Left Left Left Left Backspace');
+          assertLatex('1+2+3+4');
+        });
+
+        test('backspacing close-pipe then open-pipe of 1+|2+3| (nothing after pipe pair)', function() {
+          mq.typedText('1+|2+3|');
+          assertLatex('1+\\left|2+3\\right|');
+          mq.keystroke('Backspace');
+          assertLatex('1+\\left|2+3\\right|');
+          mq.keystroke('Left Left Left Backspace');
+          assertLatex('1+2+3');
+        });
+
+        test('backspacing open-pipe of 1+|2+3| (nothing after pipe pair)', function() {
+          mq.typedText('1+|2+3|');
+          assertLatex('1+\\left|2+3\\right|');
+          mq.keystroke('Left Left Left Left Backspace');
+          assertLatex('1+2+3');
+        });
+
+        test('backspacing close-pipe then open-pipe of |2+3|+4 (nothing before pipe pair)', function() {
+          mq.typedText('|2+3|+4');
+          assertLatex('\\left|2+3\\right|+4');
+          mq.keystroke('Left Left Backspace');
+          assertLatex('\\left|2+3+4\\right|');
+          mq.keystroke('Left Left Left Backspace');
+          assertLatex('2+3+4');
+        });
+
+        test('backspacing open-pipe of |2+3|+4 (nothing before pipe pair)', function() {
+          mq.typedText('|2+3|+4');
+          assertLatex('\\left|2+3\\right|+4');
+          mq.keystroke('Left Left Left Left Left Left Backspace');
+          assertLatex('2+3+4');
+        });
+
+        function assertParenBlockNonEmpty() {
+          var parenBlock = $(mq.el()).find('.mq-paren+span');
+          assert.equal(parenBlock.length, 1, 'exactly 1 paren block');
+          assert.ok(!parenBlock.hasClass('mq-empty'),
+                    'paren block auto-expanded, should no longer be gray');
+        }
+
+        test('backspacing close-pipe then open-pipe of 1+||+4 (empty pipe pair)', function() {
+          mq.typedText('1+||+4');
+          assertLatex('1+\\left|\\right|+4');
+          mq.keystroke('Left Left Backspace');
+          assertLatex('1+\\left|+4\\right|');
+          assertParenBlockNonEmpty();
+          mq.keystroke('Backspace');
+          assertLatex('1++4');
+        });
+
+        test('backspacing open-pipe of 1+||+4 (empty pipe pair)', function() {
+          mq.typedText('1+||+4');
+          assertLatex('1+\\left|\\right|+4');
+          mq.keystroke('Left Left Left Backspace');
+          assertLatex('1++4');
+        });
+
+        test('backspacing close-pipe then open-pipe of 1+|| (empty pipe pair, nothing after)', function() {
+          mq.typedText('1+||');
+          assertLatex('1+\\left|\\right|');
+          mq.keystroke('Backspace');
+          assertLatex('1+\\left|\\right|');
+          mq.keystroke('Backspace');
+          assertLatex('1+');
+        });
+
+        test('backspacing open-pipe of 1+|| (empty pipe pair, nothing after)', function() {
+          mq.typedText('1+||');
+          assertLatex('1+\\left|\\right|');
+          mq.keystroke('Left Backspace');
+          assertLatex('1+');
+        });
+
+        test('backspacing close-pipe then open-pipe of ||+4 (empty pipe pair, nothing before)', function() {
+          mq.typedText('||+4');
+          assertLatex('\\left|\\right|+4');
+          mq.keystroke('Left Left Backspace');
+          assertLatex('\\left|+4\\right|');
+          assertParenBlockNonEmpty();
+          mq.keystroke('Backspace');
+          assertLatex('+4');
+        });
+
+        test('backspacing open-pipe of ||+4 (empty pipe pair, nothing before)', function() {
+          mq.typedText('||+4');
+          assertLatex('\\left|\\right|+4');
+          mq.keystroke('Left Left Left Backspace');
+          assertLatex('+4');
+        });
+
+        test('rendering pipe pair 1+|2+3|+4 from LaTeX then backspacing close-pipe then open-pipe', function() {
+          mq.latex('1+\\left|2+3\\right|+4');
+          assertLatex('1+\\left|2+3\\right|+4');
+          mq.keystroke('Left Left Backspace');
+          assertLatex('1+\\left|2+3+4\\right|');
+          mq.keystroke('Left Left Left Backspace');
+          assertLatex('1+2+3+4');
+        });
+
+        test('rendering pipe pair 1+|2+3|+4 from LaTeX then backspacing open-pipe', function() {
+          mq.latex('1+\\left|2+3\\right|+4');
+          assertLatex('1+\\left|2+3\\right|+4');
+          mq.keystroke('Left Left Left Left Left Left Backspace');
+          assertLatex('1+2+3+4');
+        });
+
+        test('rendering mismatched paren/pipe group 1+|2+3)+4 from LaTeX then backspacing close-paren then open-pipe', function() {
+          mq.latex('1+\\left|2+3\\right)+4');
+          assertLatex('1+\\left|2+3\\right)+4');
+          mq.keystroke('Left Left Backspace');
+          assertLatex('1+\\left|2+3+4\\right|');
+          mq.keystroke('Left Left Left Backspace');
+          assertLatex('1+2+3+4');
+        });
+
+        test('rendering mismatched paren/pipe group 1+|2+3)+4 from LaTeX then backspacing open-pipe', function() {
+          mq.latex('1+\\left|2+3\\right)+4');
+          assertLatex('1+\\left|2+3\\right)+4');
+          mq.keystroke('Left Left Left Left Left Left Backspace');
+          assertLatex('1+2+3+4');
+        });
+
+        test('rendering mismatched paren/pipe group 1+(2+3|+4 from LaTeX then backspacing close-pipe then open-paren', function() {
+          mq.latex('1+\\left(2+3\\right|+4');
+          assertLatex('1+\\left(2+3\\right|+4');
+          mq.keystroke('Left Left Backspace');
+          assertLatex('1+\\left(2+3+4\\right)');
+          mq.keystroke('Left Left Left Backspace');
+          assertLatex('1+2+3+4');
+        });
+
+        test('rendering mismatched paren/pipe group 1+(2+3|+4 from LaTeX then backspacing open-paren', function() {
+          mq.latex('1+\\left(2+3\\right|+4');
+          assertLatex('1+\\left(2+3\\right|+4');
+          mq.keystroke('Left Left Left Left Left Left Backspace');
+          assertLatex('1+2+3+4');
+        });
+
+        test('wrapping selection in pipes 1+|2+3|+4 then backspacing open-pipe', function() {
+          mq.typedText('1+2+3+4');
+          assertLatex('1+2+3+4');
+          mq.keystroke('Left Left Shift-Left Shift-Left Shift-Left').typedText('|');
+          assertLatex('1+\\left|2+3\\right|+4');
+          mq.keystroke('Backspace');
+          assertLatex('1+2+3+4');
+        });
+
+        test('wrapping selection in pipes 1+|2+3|+4 then backspacing close-pipe then open-pipe', function() {
+          mq.typedText('1+2+3+4');
+          assertLatex('1+2+3+4');
+          mq.keystroke('Left Left Shift-Left Shift-Left Shift-Left').typedText('|');
+          assertLatex('1+\\left|2+3\\right|+4');
+          mq.keystroke('Tab Backspace');
+          assertLatex('1+\\left|2+3+4\\right|');
+          mq.keystroke('Left Left Left Backspace');
+          assertLatex('1+2+3+4');
+        });
+
+        test('backspacing close-pipe of 1+|2+3| (nothing after) then typing', function() {
+          mq.typedText('1+|2+3|');
+          assertLatex('1+\\left|2+3\\right|');
+          mq.keystroke('Backspace');
+          assertLatex('1+\\left|2+3\\right|');
+          mq.typedText('+4');
+          assertLatex('1+\\left|2+3+4\\right|');
+        });
+
+        test('backspacing open-pipe of |2+3|+4 (nothing before) then typing', function() {
+          mq.typedText('|2+3|+4');
+          assertLatex('\\left|2+3\\right|+4');
+          mq.keystroke('Home Right Backspace');
+          assertLatex('2+3+4');
+          mq.typedText('1+');
+          assertLatex('1+2+3+4');
+        });
+
+        test('backspacing pipe containing a one-sided pipe 0+|1+|2+3||+4', function() {
+          mq.typedText('0+|1+2+3|+4');
+          assertLatex('0+\\left|1+2+3\\right|+4');
+          mq.keystroke('Left Left Left Left Left Left').typedText('|');
+          assertLatex('0+\\left|1+\\left|2+3\\right|\\right|+4');
+          mq.keystroke('Shift-Tab Shift-Tab Del');
+          assertLatex('0+1+\\left|2+3\\right|+4');
+        });
+
+        test('backspacing pipe inside a one-sided pipe 0+|1+|2+3|+4|', function() {
+          mq.typedText('0+1+|2+3|+4');
+          assertLatex('0+1+\\left|2+3\\right|+4');
+          mq.keystroke('Home Right Right').typedText('|');
+          assertLatex('0+\\left|1+\\left|2+3\\right|+4\\right|');
+          mq.keystroke('Right Right Del');
+          assertLatex('0+\\left|1+2+3\\right|+4');
+        });
+
+        test('backspacing pipe containing and inside a one-sided pipe |0+|1+|2+3||+4|', function() {
+          mq.typedText('0+|1+2+3|+4');
+          assertLatex('0+\\left|1+2+3\\right|+4');
+          mq.keystroke('Home').typedText('|');
+          assertLatex('\\left|0+\\left|1+2+3\\right|+4\\right|');
+          mq.keystroke('Right Right Right Right Right').typedText('|');
+          assertLatex('\\left|0+\\left|1+\\left|2+3\\right|\\right|+4\\right|');
+          mq.keystroke('Left Left Left Backspace');
+          assertLatex('\\left|0+1+\\left|2+3\\right|+4\\right|');
+        });
+
+        test('backspacing pipe containing a one-sided pipe facing same way 0+||1+2||+3', function() {
+          mq.typedText('0+|1+2|+3');
+          assertLatex('0+\\left|1+2\\right|+3');
+          mq.keystroke('Home Right Right Right').typedText('|');
+          assertLatex('0+\\left|\\left|1+2\\right|\\right|+3');
+          mq.keystroke('Tab Tab Backspace');
+          assertLatex('0+\\left|\\left|1+2\\right|+3\\right|');
+        });
+
+        test('backspacing pipe inside a one-sided pipe facing same way 0+|1+|2+3|+4|', function() {
+          mq.typedText('0+1+|2+3|+4');
+          assertLatex('0+1+\\left|2+3\\right|+4');
+          mq.keystroke('Home Right Right').typedText('|');
+          assertLatex('0+\\left|1+\\left|2+3\\right|+4\\right|');
+          mq.keystroke('Right Right Right Right Right Right Right Backspace');
+          assertLatex('0+\\left|1+\\left|2+3+4\\right|\\right|');
+        });
+
+        test('backspacing open-paren of mismatched paren/pipe group containing a one-sided pipe 0+(1+|2+3||+4', function() {
+          mq.latex('0+\\left(1+2+3\\right|+4');
+          assertLatex('0+\\left(1+2+3\\right|+4');
+          mq.keystroke('Left Left Left Left Left Left').typedText('|');
+          assertLatex('0+\\left(1+\\left|2+3\\right|\\right|+4');
+          mq.keystroke('Shift-Tab Shift-Tab Del');
+          assertLatex('0+1+\\left|2+3\\right|+4');
+        });
+
+        test('backspacing open-paren of mismatched paren/pipe group inside a one-sided pipe 0+|1+(2+3|+4|', function() {
+          mq.latex('0+1+\\left(2+3\\right|+4');
+          assertLatex('0+1+\\left(2+3\\right|+4');
+          mq.keystroke('Home Right Right').typedText('|');
+          assertLatex('0+\\left|1+\\left(2+3\\right|+4\\right|');
+          mq.keystroke('Right Right Del');
+          assertLatex('0+\\left|1+2+3\\right|+4');
+        });
+      });
+    }
+
+    suite('typing outside ghost paren', function() {
+      test('typing outside ghost paren solidifies ghost 1+(2+3)', function() {
+        mq.typedText('1+(2+3');
+        assertLatex('1+\\left(2+3\\right)');
+        mq.keystroke('Right').typedText('+4');
+        assertLatex('1+\\left(2+3\\right)+4');
+        mq.keystroke('Left Left Left Left Left Left Left Del');
+        assertLatex('\\left(1+2+3\\right)+4');
+      });
+
+      test('selected and replaced by LiveFraction solidifies ghosts (1+2)/( )', function() {
+        mq.typedText('1+2)/');
+        assertLatex('\\frac{\\left(1+2\\right)}{ }');
+        mq.keystroke('Left Backspace');
+        assertLatex('\\frac{\\left(1+2\\right)}{ }');
+      });
+
+      test('close paren group by typing close-bracket outside ghost paren (1+2]', function() {
+        mq.typedText('(1+2');
+        assertLatex('\\left(1+2\\right)');
+        mq.keystroke('Right').typedText(']');
+        assertLatex('\\left(1+2\\right]');
+      });
+
+      test('close adjacent paren group before containing paren group (1+(2+3])', function() {
+        mq.typedText('(1+(2+3');
+        assertLatex('\\left(1+\\left(2+3\\right)\\right)');
+        mq.keystroke('Right').typedText(']');
+        assertLatex('\\left(1+\\left(2+3\\right]\\right)');
+        mq.typedText(']');
+        assertLatex('\\left(1+\\left(2+3\\right]\\right]');
+      });
+
+      test('can type close-bracket on solid side of one-sided paren [](1+2)', function() {
+        mq.typedText('(1+2');
+        assertLatex('\\left(1+2\\right)');
+        mq.moveToLeftEnd().typedText(']');
+        assertLatex('\\left[\\right]\\left(1+2\\right)');
+      });
+
+      suite('pipes', function() {
+        test('close pipe pair from outside to the right |1+2|', function() {
+          mq.typedText('|1+2');
+          assertLatex('\\left|1+2\\right|');
+          mq.keystroke('Right').typedText('|');
+          assertLatex('\\left|1+2\\right|');
+          mq.keystroke('Home Del');
+          assertLatex('\\left|1+2\\right|');
+        });
+
+        test('close pipe pair from outside to the left |1+2|', function() {
+          mq.typedText('|1+2|');
+          assertLatex('\\left|1+2\\right|');
+          mq.keystroke('Home Del');
+          assertLatex('\\left|1+2\\right|');
+          mq.keystroke('Left').typedText('|');
+          assertLatex('\\left|1+2\\right|');
+          mq.keystroke('Ctrl-End Backspace');
+          assertLatex('\\left|1+2\\right|');
+        });
+
+        test('can type pipe on solid side of one-sided pipe ||||', function() {
+          mq.typedText('|');
+          assertLatex('\\left|\\right|');
+          mq.moveToLeftEnd().typedText('|');
+          assertLatex('\\left|\\left|\\right|\\right|');
+        });
+      });
+    });
+  });
+
+  suite('autoCommands', function() {
+    setup(function() {
+      MQ.config({
+        autoCommands: 'pi tau phi theta Gamma sum prod sqrt nthroot'
+      });
+    });
+
+    test('individual commands', function(){
+      mq.typedText('sum' + 'n=0');
+      mq.keystroke('Up').typedText('100').keystroke('Right');
+      assertLatex('\\sum_{n=0}^{100}');
+      mq.keystroke('Ctrl-Backspace');
+
+      mq.typedText('prod');
+      mq.typedText('n=0').keystroke('Up').typedText('100').keystroke('Right');
+      assertLatex('\\prod_{n=0}^{100}');
+      mq.keystroke('Ctrl-Backspace');
+
+      mq.typedText('sqrt');
+      mq.typedText('100').keystroke('Right');
+      assertLatex('\\sqrt{100}');
+      mq.keystroke('Ctrl-Backspace');
+
+      mq.typedText('nthroot');
+      mq.typedText('n').keystroke('Right').typedText('100').keystroke('Right');
+      assertLatex('\\sqrt[n]{100}');
+      mq.keystroke('Ctrl-Backspace');
+
+      mq.typedText('pi');
+      assertLatex('\\pi');
+      mq.keystroke('Backspace');
+
+      mq.typedText('tau');
+      assertLatex('\\tau');
+      mq.keystroke('Backspace');
+
+      mq.typedText('phi');
+      assertLatex('\\phi');
+      mq.keystroke('Backspace');
+
+      mq.typedText('theta');
+      assertLatex('\\theta');
+      mq.keystroke('Backspace');
+
+      mq.typedText('Gamma');
+      assertLatex('\\Gamma');
+      mq.keystroke('Backspace');
+    });
+
+    test('sequences of auto-commands and other assorted characters', function() {
+      mq.typedText('sin' + 'pi');
+      assertLatex('\\sin\\pi');
+      mq.keystroke('Left Backspace');
+      assertLatex('si\\pi');
+      mq.keystroke('Left').typedText('p');
+      assertLatex('spi\\pi');
+      mq.typedText('i');
+      assertLatex('s\\pi i\\pi');
+      mq.typedText('p');
+      assertLatex('s\\pi pi\\pi');
+      mq.keystroke('Right').typedText('n');
+      assertLatex('s\\pi pin\\pi');
+      mq.keystroke('Left Left Left').typedText('s');
+      assertLatex('s\\pi spin\\pi');
+      mq.keystroke('Backspace');
+      assertLatex('s\\pi pin\\pi');
+      mq.keystroke('Del').keystroke('Backspace');
+      assertLatex('\\sin\\pi');
+    });
+
+    test('command contains non-letters', function() {
+      assert.throws(function() { MQ.config({ autoCommands: 'e1' }); });
+    });
+
+    test('command length less than 2', function() {
+      assert.throws(function() { MQ.config({ autoCommands: 'e' }); });
+    });
+
+    test('command is a built-in operator name', function() {
+      var cmds = ('Pr arg deg det dim exp gcd hom inf ker lg lim ln log max min sup'
+                  + ' limsup liminf injlim projlim Pr').split(' ');
+      for (var i = 0; i < cmds.length; i += 1) {
+        assert.throws(function() { MQ.config({ autoCommands: cmds[i] }) },
+                      'MQ.config({ autoCommands: "'+cmds[i]+'" })');
+      }
+    });
+
+    test('built-in operator names even after auto-operator names overridden', function() {
+      MQ.config({ autoOperatorNames: 'sin inf arcosh cosh cos cosec csc' });
+        // ^ happen to be the ones required by autoOperatorNames.test.js
+      var cmds = 'Pr arg deg det exp gcd inf lg lim ln log max min sup'.split(' ');
+      for (var i = 0; i < cmds.length; i += 1) {
+        assert.throws(function() { MQ.config({ autoCommands: cmds[i] }) },
+                      'MQ.config({ autoCommands: "'+cmds[i]+'" })');
+      }
+    });
+
+    suite('command list not perfectly space-delimited', function() {
+      test('double space', function() {
+        assert.throws(function() { MQ.config({ autoCommands: 'pi  theta' }); });
+      });
+
+      test('leading space', function() {
+        assert.throws(function() { MQ.config({ autoCommands: ' pi' }); });
+      });
+
+      test('trailing space', function() {
+        assert.throws(function() { MQ.config({ autoCommands: 'pi ' }); });
+      });
+    });
+  });
+
+  suite('inequalities', function() {
+    // assertFullyFunctioningInequality() checks not only that the inequality
+    // has the right LaTeX and when you backspace it has the right LaTeX,
+    // but also that when you backspace you get the right state such that
+    // you can either type = again to get the non-strict inequality again,
+    // or backspace again and it'll delete correctly.
+    function assertFullyFunctioningInequality(nonStrict, strict) {
+      assertLatex(nonStrict);
+      mq.keystroke('Backspace');
+      assertLatex(strict);
+      mq.typedText('=');
+      assertLatex(nonStrict);
+      mq.keystroke('Backspace');
+      assertLatex(strict);
+      mq.keystroke('Backspace');
+      assertLatex('');
+    }
+    test('typing and backspacing <= and >=', function() {
+      mq.typedText('<');
+      assertLatex('<');
+      mq.typedText('=');
+      assertFullyFunctioningInequality('\\le', '<');
+
+      mq.typedText('>');
+      assertLatex('>');
+      mq.typedText('=');
+      assertFullyFunctioningInequality('\\ge', '>');
+
+      mq.typedText('<<>>==>><<==');
+      assertLatex('<<>\\ge=>><\\le=');
+    });
+
+    test('typing ≤ and ≥ chars directly', function() {
+      mq.typedText('≤');
+      assertFullyFunctioningInequality('\\le', '<');
+
+      mq.typedText('≥');
+      assertFullyFunctioningInequality('\\ge', '>');
+    });
+
+    suite('rendered from LaTeX', function() {
+      test('control sequences', function() {
+        mq.latex('\\le');
+        assertFullyFunctioningInequality('\\le', '<');
+
+        mq.latex('\\ge');
+        assertFullyFunctioningInequality('\\ge', '>');
+      });
+
+      test('≤ and ≥ chars', function() {
+        mq.latex('≤');
+        assertFullyFunctioningInequality('\\le', '<');
+
+        mq.latex('≥');
+        assertFullyFunctioningInequality('\\ge', '>');
+      });
+    });
+  });
+
+  suite('SupSub behavior options', function() {
+    test('charsThatBreakOutOfSupSub', function() {
+      assert.equal(mq.typedText('x^2n+y').latex(), 'x^{2n+y}');
+      mq.latex('');
+      assert.equal(mq.typedText('x^+2n').latex(), 'x^{+2n}');
+      mq.latex('');
+      assert.equal(mq.typedText('x^-2n').latex(), 'x^{-2n}');
+      mq.latex('');
+      assert.equal(mq.typedText('x^=2n').latex(), 'x^{=2n}');
+      mq.latex('');
+
+      MQ.config({ charsThatBreakOutOfSupSub: '+-=<>' });
+
+      assert.equal(mq.typedText('x^2n+y').latex(), 'x^{2n}+y');
+      mq.latex('');
+
+      // Unary operators never break out of exponents.
+      assert.equal(mq.typedText('x^+2n').latex(), 'x^{+2n}');
+      mq.latex('');
+      assert.equal(mq.typedText('x^-2n').latex(), 'x^{-2n}');
+      mq.latex('');
+      assert.equal(mq.typedText('x^=2n').latex(), 'x^{=2n}');
+      mq.latex('');
+
+      // Only break out of exponents if cursor at the end, don't
+      // jump from the middle of the exponent out to the right.
+      assert.equal(mq.typedText('x^ab').latex(), 'x^{ab}');
+      assert.equal(mq.keystroke('Left').typedText('+').latex(), 'x^{a+b}');
+      mq.latex('');
+    });
+    test('supSubsRequireOperand', function() {
+      assert.equal(mq.typedText('^').latex(), '^{ }');
+      assert.equal(mq.typedText('2').latex(), '^2');
+      assert.equal(mq.typedText('n').latex(), '^{2n}');
+      mq.latex('');
+      assert.equal(mq.typedText('x').latex(), 'x');
+      assert.equal(mq.typedText('^').latex(), 'x^{ }');
+      assert.equal(mq.typedText('2').latex(), 'x^2');
+      assert.equal(mq.typedText('n').latex(), 'x^{2n}');
+      mq.latex('');
+      assert.equal(mq.typedText('x').latex(), 'x');
+      assert.equal(mq.typedText('^').latex(), 'x^{ }');
+      assert.equal(mq.typedText('^').latex(), 'x^{^{ }}');
+      assert.equal(mq.typedText('2').latex(), 'x^{^2}');
+      assert.equal(mq.typedText('n').latex(), 'x^{^{2n}}');
+
+      mq.latex('');
+      MQ.config({ supSubsRequireOperand: true });
+
+      assert.equal(mq.typedText('^').latex(), '');
+      assert.equal(mq.typedText('2').latex(), '2');
+      assert.equal(mq.typedText('n').latex(), '2n');
+      mq.latex('');
+      assert.equal(mq.typedText('x').latex(), 'x');
+      assert.equal(mq.typedText('^').latex(), 'x^{ }');
+      assert.equal(mq.typedText('2').latex(), 'x^2');
+      assert.equal(mq.typedText('n').latex(), 'x^{2n}');
+      mq.latex('');
+      assert.equal(mq.typedText('x').latex(), 'x');
+      assert.equal(mq.typedText('^').latex(), 'x^{ }');
+      assert.equal(mq.typedText('^').latex(), 'x^{ }');
+      assert.equal(mq.typedText('2').latex(), 'x^2');
+      assert.equal(mq.typedText('n').latex(), 'x^{2n}');
+    });
+  });
+});
+suite('up/down', function() {
+  var mq, rootBlock, controller, cursor;
+  setup(function() {
+    mq = MQ.MathField($('<span></span>').appendTo('#mock')[0]);
+    rootBlock = mq.__controller.root;
+    controller = mq.__controller;
+    cursor = controller.cursor;
+  });
+  teardown(function() {
+    $(mq.el()).remove();
+  });
+
   test('up/down in out of exponent', function() {
-    rootBlock.renderLatex('x^{nm}');
+    controller.renderLatexMath('x^{nm}');
     var exp = rootBlock.ends[R],
       expBlock = exp.ends[L];
     assert.equal(exp.latex(), '^{nm}', 'right end el is exponent');
     assert.equal(cursor.parent, rootBlock, 'cursor is in root block');
     assert.equal(cursor[L], exp, 'cursor is at the end of root block');
 
-    move('Up');
+    mq.keystroke('Up');
     assert.equal(cursor.parent, expBlock, 'cursor up goes into exponent');
 
-    move('Down');
+    mq.keystroke('Down');
     assert.equal(cursor.parent, rootBlock, 'cursor down leaves exponent');
     assert.equal(cursor[L], exp, 'down when cursor at end of exponent puts cursor after exponent');
 
-    move('Up Left Left');
+    mq.keystroke('Up Left Left');
     assert.equal(cursor.parent, expBlock, 'cursor up left stays in exponent');
     assert.equal(cursor[L], 0, 'cursor is at the beginning of exponent');
 
-    move('Down');
+    mq.keystroke('Down');
     assert.equal(cursor.parent, rootBlock, 'cursor down leaves exponent');
     assert.equal(cursor[R], exp, 'cursor down in beginning of exponent puts cursor before exponent');
 
-    move('Up Right');
+    mq.keystroke('Up Right');
     assert.equal(cursor.parent, expBlock, 'cursor up left stays in exponent');
     assert.equal(cursor[L].latex(), 'n', 'cursor is in the middle of exponent');
     assert.equal(cursor[R].latex(), 'm', 'cursor is in the middle of exponent');
 
-    move('Down');
+    mq.keystroke('Down');
     assert.equal(cursor.parent, rootBlock, 'cursor down leaves exponent');
     assert.equal(cursor[R], exp, 'cursor down in middle of exponent puts cursor before exponent');
   });
 
   // literally just swapped up and down, exponent with subscript, nm with 12
   test('up/down in out of subscript', function() {
-    rootBlock.renderLatex('a_{12}');
+    controller.renderLatexMath('a_{12}');
     var sub = rootBlock.ends[R],
       subBlock = sub.ends[L];
     assert.equal(sub.latex(), '_{12}', 'right end el is subscript');
     assert.equal(cursor.parent, rootBlock, 'cursor is in root block');
     assert.equal(cursor[L], sub, 'cursor is at the end of root block');
 
-    move('Down');
+    mq.keystroke('Down');
     assert.equal(cursor.parent, subBlock, 'cursor down goes into subscript');
 
-    move('Up');
+    mq.keystroke('Up');
     assert.equal(cursor.parent, rootBlock, 'cursor up leaves subscript');
     assert.equal(cursor[L], sub, 'up when cursor at end of subscript puts cursor after subscript');
 
-    move('Down Left Left');
+    mq.keystroke('Down Left Left');
     assert.equal(cursor.parent, subBlock, 'cursor down left stays in subscript');
     assert.equal(cursor[L], 0, 'cursor is at the beginning of subscript');
 
-    move('Up');
+    mq.keystroke('Up');
     assert.equal(cursor.parent, rootBlock, 'cursor up leaves subscript');
     assert.equal(cursor[R], sub, 'cursor up in beginning of subscript puts cursor before subscript');
 
-    move('Down Right');
+    mq.keystroke('Down Right');
     assert.equal(cursor.parent, subBlock, 'cursor down left stays in subscript');
     assert.equal(cursor[L].latex(), '1', 'cursor is in the middle of subscript');
     assert.equal(cursor[R].latex(), '2', 'cursor is in the middle of subscript');
 
-    move('Up');
+    mq.keystroke('Up');
     assert.equal(cursor.parent, rootBlock, 'cursor up leaves subscript');
     assert.equal(cursor[R], sub, 'cursor up in middle of subscript puts cursor before subscript');
   });
 
   test('up/down into and within fraction', function() {
-    rootBlock.renderLatex('\\frac{12}{34}');
+    controller.renderLatexMath('\\frac{12}{34}');
     var frac = rootBlock.ends[L],
       numer = frac.ends[L],
       denom = frac.ends[R];
@@ -4945,50 +8704,50 @@ suite('up/down', function() {
     assert.equal(numer.latex(), '12', 'numerator is left end child of fraction');
     assert.equal(denom.latex(), '34', 'denominator is right end child of fraction');
 
-    move('Up');
+    mq.keystroke('Up');
     assert.equal(cursor.parent, numer, 'cursor up goes into numerator');
     assert.equal(cursor[R], 0, 'cursor up from right of fraction inserts at right end of numerator');
 
-    move('Down');
+    mq.keystroke('Down');
     assert.equal(cursor.parent, denom, 'cursor down goes into denominator');
-    assert.equal(cursor[L], 0, 'cursor down from numerator inserts at left end of denominator');
+    assert.equal(cursor[R], 0, 'cursor down from numerator inserts at right end of denominator');
 
-    move('Up');
+    mq.keystroke('Up');
     assert.equal(cursor.parent, numer, 'cursor up goes into numerator');
     assert.equal(cursor[R], 0, 'cursor up from denominator inserts at right end of numerator');
 
-    move('Left Left Left');
+    mq.keystroke('Left Left Left');
     assert.equal(cursor.parent, rootBlock, 'cursor outside fraction');
     assert.equal(cursor[R], frac, 'cursor before fraction');
 
-    move('Up');
+    mq.keystroke('Up');
     assert.equal(cursor.parent, numer, 'cursor up goes into numerator');
     assert.equal(cursor[L], 0, 'cursor up from left of fraction inserts at left end of numerator');
 
-    move('Left');
+    mq.keystroke('Left');
     assert.equal(cursor.parent, rootBlock, 'cursor outside fraction');
     assert.equal(cursor[R], frac, 'cursor before fraction');
 
-    move('Down');
+    mq.keystroke('Down');
     assert.equal(cursor.parent, denom, 'cursor down goes into denominator');
     assert.equal(cursor[L], 0, 'cursor down from left of fraction inserts at left end of denominator');
   });
 
   test('nested subscripts and fractions', function() {
-    rootBlock.renderLatex('\\frac{d}{dx_{\\frac{24}{36}0}}\\sqrt{x}=x^{\\frac{1}{2}}');
+    controller.renderLatexMath('\\frac{d}{dx_{\\frac{24}{36}0}}\\sqrt{x}=x^{\\frac{1}{2}}');
     var exp = rootBlock.ends[R],
       expBlock = exp.ends[L],
       half = expBlock.ends[L],
       halfNumer = half.ends[L],
       halfDenom = half.ends[R];
 
-    move('Left');
+    mq.keystroke('Left');
     assert.equal(cursor.parent, expBlock, 'cursor left goes into exponent');
 
-    move('Down');
+    mq.keystroke('Down');
     assert.equal(cursor.parent, halfDenom, 'cursor down goes into denominator of half');
 
-    move('Down');
+    mq.keystroke('Down');
     assert.equal(cursor.parent, rootBlock, 'down again puts cursor back in root block');
     assert.equal(cursor[L], exp, 'down from end of half puts cursor after exponent');
 
@@ -5002,34 +8761,58 @@ suite('up/down', function() {
       subFracDenom = subFrac.ends[R];
 
     cursor.insAtLeftEnd(rootBlock);
-    move('Down Right Right Down');
+    mq.keystroke('Down Right Right Down');
     assert.equal(cursor.parent, subBlock, 'cursor in subscript');
 
-    move('Up');
+    mq.keystroke('Up');
     assert.equal(cursor.parent, subFracNumer, 'cursor up from beginning of subscript goes into subscript fraction numerator');
 
-    move('Up');
+    mq.keystroke('Up');
     assert.equal(cursor.parent, dxBlock, 'cursor up from subscript fraction numerator goes out of subscript');
     assert.equal(cursor[R], sub, 'cursor up from subscript fraction numerator goes before subscript');
 
-    move('Down Down');
+    mq.keystroke('Down Down');
     assert.equal(cursor.parent, subFracDenom, 'cursor in subscript fraction denominator');
 
-    move('Up Up');
+    mq.keystroke('Up Up');
     assert.equal(cursor.parent, dxBlock, 'cursor up up from subscript fraction denominator that\s not at right end goes out of subscript');
     assert.equal(cursor[R], sub, 'cursor up up from subscript fraction denominator that\s not at right end goes before subscript');
 
-    cursor.insAtRightEnd(subBlock).backspace();
+    cursor.insAtRightEnd(subBlock);
+    controller.backspace();
     assert.equal(subFrac[R], 0, 'subscript fraction is at right end');
     assert.equal(cursor[L], subFrac, 'cursor after subscript fraction');
 
-    move('Down');
+    mq.keystroke('Down');
     assert.equal(cursor.parent, subFracDenom, 'cursor in subscript fraction denominator');
 
-    move('Up Up');
+    mq.keystroke('Up Up');
     assert.equal(cursor.parent, dxBlock, 'cursor up up from subscript fraction denominator that is at right end goes out of subscript');
     assert.equal(cursor[L], sub, 'cursor up up from subscript fraction denominator that is at right end goes after subscript');
   });
+
+  test('\\MathQuillMathField{} in a fraction', function() {
+    var outer = MQ.MathField(
+      $('<span>\\frac{\\MathQuillMathField{n}}{2}</span>').appendTo('#mock')[0]
+    );
+    var inner = MQ($(outer.el()).find('.mq-editable-field')[0]);
+
+    assert.equal(inner.__controller.cursor.parent, inner.__controller.root);
+    inner.keystroke('Down');
+    assert.equal(inner.__controller.cursor.parent, inner.__controller.root);
+
+    $(outer.el()).remove();
+  });
 });
+for (var key in MQ1) (function(key, val) {
+  if (typeof val === 'function') {
+    MathQuill[key] = function() {
+      insistOnInterVer();
+      return val.apply(this, arguments);
+    };
+    MathQuill[key].prototype = val.prototype;
+  }
+  else MathQuill[key] = val;
+}(key, MQ1[key]));
 
 }());
