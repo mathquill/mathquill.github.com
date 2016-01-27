@@ -6,7 +6,7 @@ body {
   color: black;
   background-color: white;
   background-image: url("../images/quill_2_opacity.png");
-  background-position: 75% 10%;
+  background-position: 54% 17%;
   background-repeat: no-repeat;
 }
 h1, #subtitle, #byline {
@@ -23,7 +23,7 @@ h1 {
   margin: 0;
 }
 #byline {
-  margin: .4em 0 5em;
+  margin: .4em 0 8em;
 }
 #byline a {
   color: black;
@@ -39,11 +39,7 @@ h1 {
   font-size: 175%;
 }
 #latexp {
-  padding-bottom: 2em;
-  border-bottom: 1px solid black;
-}
-#typing {
-  padding-top: 5em;
+  padding-bottom: 3em;
 }
 code {
   background: #eee;
