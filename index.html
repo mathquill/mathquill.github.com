@@ -9,6 +9,7 @@
 
 <link rel="stylesheet" type="text/css" href="support/home.css">
 <link rel="stylesheet" type="text/css" href="mathquill/mathquill.css">
+<link rel="icon" type="image/png" href="images/quill_transparant_favicon.png">
 
 <script type="text/javascript" src="http://ajax.googleapis.com/ajax/libs/jquery/1.7.1/jquery.min.js"></script>
 <script type="text/javascript" src="mathquill/mathquill.js"></script>
@@ -16,13 +17,63 @@
 </head>
 <body>
 
+<a href="http://github.com/mathquill/mathquill"><img style="position: absolute; top: 0; right: 0; border: 0;" src="https://s3.amazonaws.com/github/ribbons/forkme_right_white_ffffff.png" alt="Fork me on GitHub!"></a>
+
 <h1>MathQuill</h1>
 <p id="subtitle">An Only Slightly Buggy Web Formula Editor</p>
-<p id="byline">by <a href="http://github.com/laughinghan" title="Han">@laughinghan</a> and <a href="http://github.com/jneen" title="Jeanine">@jneen</a></p>
+<p id="byline">by <a href="http://github.com/laughinghan" title="Han">@laughinghan</a>, <a href="http://github.com/jneen" title="Jeanine">@jneen</a>, and <a href="http://github.com/stufflebear" title="Mary">@stufflebear</a></p>
 
-<p>Try typing <code>d/dx \sqrt x =1/2\sqrt x</code>:</p>
+
+<p id="animation"><span id="math-field-animated" style="min-width: 5em; min-height: 3em"></span></p>
+<script>
+var MQ = MathQuill.getInterface(2); // guaranteed backcompat
+var span = $('#math-field-animated')[0];
+var mathFieldAnimated = MQ.MathField(span, {
+  spaceBehavesLikeTab: true, // configurable
+  handlers: {
+    edit: function() { // useful event handlers
+      $('#latex').text(mathFieldAnimated.latex()); // simple API
+    }
+  }
+});
+
+expression = "x=-b\\pm \\sqrt b^2 -4ac ";
+exprLength = expression.length
+selectLength = 4
+expressionDenom = "/2a"
+nextCharIndex = 0;
+function typeEpression() {
+  // Type numerator
+	if (nextCharIndex < exprLength) {
+    charachter = expression[nextCharIndex]
+    if (charachter == " ") {
+      mathFieldAnimated.keystroke("Spacebar")
+    } else {
+  		mathFieldAnimated.typedText(charachter);
+    }
+
+  // Select numerator
+	} else if (nextCharIndex >= exprLength && nextCharIndex < exprLength + selectLength) {
+    mathFieldAnimated.keystroke("Shift-Left")
+
+  // Type denominator
+	} else {
+		denomIndex = nextCharIndex - (exprLength + selectLength)
+		mathFieldAnimated.typedText(expressionDenom[denomIndex])
+	}
+
+  if (nextCharIndex < (exprLength + selectLength + expressionDenom.length - 1)) {
+	 nextCharIndex++;
+	 setTimeout(typeEpression, 200);
+  }
+}
+setTimeout(typeEpression, 1000);
+</script>
+<p id="latexp"><strong>LaTeX</strong>:  <span id="latex"></span></p>
+
+
+<p id="typing">Try typing <code>d/dx \sqrt x =1/2\sqrt x</code>:</p>
 <p><span id="math-field" style="min-width: 5em; min-height: 1.2em"></span></p>
-<p>(As LaTeX: <span id="latex"></span>)</p>
 
 <script>
 var MQ = MathQuill.getInterface(2); // guaranteed backcompat
@@ -35,7 +86,6 @@ var mathField = MQ.MathField(span, {
     }
   }
 });
-mathField.focus();
 </script>
 
 <pre class="highlight"><span class="nt">&lt;p&gt;</span>Try typing <span class="nt">&lt;code&gt;</span>d/dx \sqrt x =1/2\sqrt x<span class="nt">&lt;/code&gt;</span>:<span class="nt">&lt;/p&gt;</span>

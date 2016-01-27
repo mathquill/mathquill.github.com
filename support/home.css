@@ -1,13 +1,16 @@
 body {
   min-height: 100%;
-  max-width: 6.5in;
+  max-width: 5.5in;
   margin: 0 auto;
   font: 1.2em Symbola, serif;
   color: black;
   background-color: white;
+  background-image: url("../images/quill_2_opacity.png");
+  background-position: 75% 10%;
+  background-repeat: no-repeat;
 }
 h1, #subtitle, #byline {
-  text-align: center;
+  text-align: left;
 }
 h1 {
   font-size: 5em;
@@ -25,6 +28,22 @@ h1 {
 #byline a {
   color: black;
   font: bold .9em "Helvetica Neue", Helvetica, Arial, sans-serif;
+}
+#animation {
+  text-align: left;
+  padding-bottom: 5em;
+}
+#math-field-animated {
+  text-align: left;
+  border: none;
+  font-size: 175%;
+}
+#latexp {
+  padding-bottom: 2em;
+  border-bottom: 1px solid black;
+}
+#typing {
+  padding-top: 5em;
 }
 code {
   background: #eee;
