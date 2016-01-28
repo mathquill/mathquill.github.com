@@ -9,6 +9,7 @@
 
 <link rel="stylesheet" type="text/css" href="support/home.css">
 <link rel="stylesheet" type="text/css" href="mathquill/mathquill.css">
+<link rel="stylesheet" type="text/css" href="support/keys.css">
 <link rel="icon" type="image/png" href="images/quill_transparant_favicon.png">
 
 <script type="text/javascript" src="http://ajax.googleapis.com/ajax/libs/jquery/1.7.1/jquery.min.js"></script>
@@ -24,49 +25,81 @@
 <p id="byline">by <a href="http://github.com/laughinghan" title="Han">@laughinghan</a>, <a href="http://github.com/jneen" title="Jeanine">@jneen</a>, and <a href="http://github.com/stufflebear" title="Mary">@stufflebear</a></p>
 
 
-<p id="animation"><span id="math-field-animated" style="min-width: 5em; min-height: 2.6em"></span></p>
+<p id="animation"><span id="math-field-animated" style="min-width: 10em; min-height: 1.2em"></span> <span id="rawText"></span></p>
 <script>
 var MQ = MathQuill.getInterface(2); // guaranteed backcompat
 var span = $('#math-field-animated')[0];
 var mathFieldAnimated = MQ.MathField(span, {
   spaceBehavesLikeTab: true
 });
+mathFieldAnimated.focus()
 
 expression = "x=-b\\pm \\sqrt b^2 -4ac ";
 exprLength = expression.length
 selectLength = 4
 expressionDenom = "/2a"
 nextCharIndex = 0;
+
+rawStrings = []
+function typeRaw(raw) {
+  if (raw == "") {
+    rawStrings = []
+    $('#rawText').html("");
+    return
+  }
+
+  rawStrings.push(raw);
+  charachtersToShow = 1
+  end = rawStrings.length;
+  start = Math.max(0, end - charachtersToShow);
+  lastN = rawStrings.slice(start, end)
+
+  kbdString = ""
+  for (i=0; i<lastN.length; i++) {
+    kbdString = kbdString + "<kbd class=\"light\">" + lastN[i] + "</kbd>"
+  }
+
+  $('#rawText').html(kbdString);
+}
+
 function typeEpression() {
   // Type numerator
 	if (nextCharIndex < exprLength) {
     charachter = expression[nextCharIndex]
     if (charachter == " ") {
       mathFieldAnimated.keystroke("Spacebar")
+      typeRaw("Space")
     } else {
   		mathFieldAnimated.typedText(charachter);
+      typeRaw(charachter)
     }
 
   // Select numerator
 	} else if (nextCharIndex >= exprLength && nextCharIndex < exprLength + selectLength) {
     mathFieldAnimated.keystroke("Shift-Left")
+    typeRaw("Shift Left")
 
   // Type denominator
 	} else {
 		denomIndex = nextCharIndex - (exprLength + selectLength)
-		mathFieldAnimated.typedText(expressionDenom[denomIndex])
+    charachter = expressionDenom[denomIndex]
+		mathFieldAnimated.typedText(charachter)
+    typeRaw(charachter)
 	}
 
   if (nextCharIndex < (exprLength + selectLength + expressionDenom.length - 1)) {
 	 nextCharIndex++;
-	 setTimeout(typeEpression, 200);
+	 setTimeout(typeEpression, 500);
+  } else {
+    setTimeout(function() {
+     typeRaw("")
+   }, 1000);
   }
 }
 setTimeout(typeEpression, 1000);
 </script>
 
 <h3>A Simple Example</h3>
-<p id="typing">Try typing <code>d/dx \sqrt x =1/2\sqrt x</code>:</p>
 <p>MathQuill: <span id="math-field" style="min-width: 5em; min-height: 1.2em"></span></p>
 <p id="latexp">LaTeX: <span id="latex"></span></p>
 
@@ -83,10 +116,9 @@ var mathField = MQ.MathField(span, {
   }
 });
 </script>
-
+<!--- Formatting taken from rouge.jneen.net -->
 <pre class="highlight">
 <span class="nt">&lt;h3&gt;</span>A Simple Example<span class="nt">&lt;/h3&gt;</span>
-<span class="nt">&lt;p</span> <span class="na">id=</span><span class="s">"typing"</span><span class="nt">&gt;</span>Try typing <span class="nt">&lt;code&gt;</span>d/dx \sqrt x =1/2\sqrt x<span class="nt">&lt;/code&gt;</span>:<span class="nt">&lt;/p&gt;</span>
 <span class="nt">&lt;p&gt;</span>MathQuill: <span class="nt">&lt;span</span> <span class="na">id=</span><span class="s">"math-field"</span> <span class="na">style=</span><span class="s">"min-width: 5em; min-height: 1.2em"</span><span class="nt">&gt;&lt;/span&gt;&lt;/p&gt;</span>
 <span class="nt">&lt;p</span> <span class="na">id=</span><span class="s">"latexp"</span><span class="nt">&gt;</span>LaTeX: <span class="nt">&lt;span</span> <span class="na">id=</span><span class="s">"latex"</span><span class="nt">&gt;&lt;/span&gt;&lt;/p&gt;</span>
 

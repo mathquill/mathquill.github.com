@@ -23,7 +23,7 @@ h1 {
   margin: 0;
 }
 #byline {
-  margin: .4em 0 8em;
+  margin: .4em 0 6em;
 }
 #byline a {
   color: black;
@@ -31,15 +31,20 @@ h1 {
 }
 #animation {
   text-align: left;
-  padding-bottom: 5em;
+  padding-bottom: 6em;
+  height: 2.6em;
 }
 #math-field-animated {
   text-align: left;
   border: none;
+  box-shadow: none;
   font-size: 175%;
 }
 #latexp {
-  padding-bottom: 3em;
+  padding-bottom: 2em;
+}
+#rawText {
+  font-size: 1.5em;
 }
 code {
   background: #eee;
