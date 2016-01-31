@@ -6,32 +6,36 @@ body {
   color: black;
   background-color: white;
   background-image: url("../images/quill_2_opacity.png");
-  background-position: 54% 17%;
+  background-position: 50% 0%;
   background-repeat: no-repeat;
 }
-h1, #subtitle, #byline {
-  text-align: left;
+h1, #subtitle {
+  text-align: center;
 }
 h1 {
   font-size: 5em;
   font-weight: 100;
   margin: 1em 0 0;
 }
+h3 {
+  padding-top: 2em;
+  margin-bottom: 0;
+}
 #subtitle {
   font-size: 1.2em;
   font-weight: normal;
   margin: 0;
 }
-#byline {
-  margin: .4em 0 6em;
+p {
+  margin: .4em 0;
 }
 #byline a {
   color: black;
   font: bold .9em "Helvetica Neue", Helvetica, Arial, sans-serif;
 }
 #animation {
-  text-align: left;
-  padding-bottom: 6em;
+  padding-top: 6em;
+  padding-bottom: 3em;
   height: 2.6em;
 }
 #math-field-animated {
@@ -40,8 +44,11 @@ h1 {
   box-shadow: none;
   font-size: 175%;
 }
+#introP {
+  padding-bottom: 1em;
+}
 #latexp {
-  padding-bottom: 2em;
+  padding-bottom: 1em;
 }
 #rawText {
   font-size: 1.5em;
@@ -59,6 +66,9 @@ code span {
 #latex {
   font-family: monospace;
   vertical-align: .1em;
+}
+#footer {
+  padding: 2em;
 }
 a {
   color: mediumblue;
