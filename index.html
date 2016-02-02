@@ -62,32 +62,32 @@ function typeRaw(raw) {
 
 function typeEpression() {
   // Type numerator
-	if (nextCharIndex < exprLength) {
+  if (nextCharIndex < exprLength) {
     charachter = expression[nextCharIndex]
     if (charachter == " ") {
       mathFieldAnimated.keystroke("Spacebar")
       typeRaw("Space")
     } else {
-  		mathFieldAnimated.typedText(charachter);
+      mathFieldAnimated.typedText(charachter);
       typeRaw(charachter)
     }
 
   // Select numerator
-	} else if (nextCharIndex >= exprLength && nextCharIndex < exprLength + selectLength) {
+  } else if (nextCharIndex >= exprLength && nextCharIndex < exprLength + selectLength) {
     mathFieldAnimated.keystroke("Shift-Left")
     typeRaw("Shift-Left")
 
   // Type denominator
-	} else {
-		denomIndex = nextCharIndex - (exprLength + selectLength)
+  } else {
+    denomIndex = nextCharIndex - (exprLength + selectLength)
     charachter = expressionDenom[denomIndex]
-		mathFieldAnimated.typedText(charachter)
+    mathFieldAnimated.typedText(charachter)
     typeRaw(charachter)
-	}
+  }
 
   if (nextCharIndex < (exprLength + selectLength + expressionDenom.length - 1)) {
-	 nextCharIndex++;
-	 setTimeout(typeEpression, 500);
+   nextCharIndex++;
+   setTimeout(typeEpression, 500);
   } else {
     setTimeout(function() {
      typeRaw("")
