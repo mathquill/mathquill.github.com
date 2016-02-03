@@ -21,9 +21,16 @@
 <a href="http://github.com/mathquill/mathquill"><img style="position: absolute; top: 0; right: 0; border: 0;" src="https://s3.amazonaws.com/github/ribbons/forkme_right_white_ffffff.png" alt="Fork me on GitHub!"></a>
 
 <h1>MathQuill</h1>
-<p id="subtitle">Typing Math Made Easy</p>
+<p id="subtitle">a Brazen Formula Editor for the Web</p>
 
-<p id="animation"><span id="math-field-animated" style="min-width: 10em; min-height: 1.2em"></span> <span id="rawText"></span></p>
+<p>Typing math in your web application should be this easy:</p>
+<p id="keystrokes">
+  <kbd>x</kbd><kbd>=</kbd><kbd>-</kbd><kbd>b</kbd><kbd>\</kbd><kbd>p</kbd><kbd>m</kbd><kbd>Space</kbd><kbd>\</kbd><kbd>s</kbd><kbd>q</kbd><kbd>r</kbd><kbd>t</kbd><kbd>Space</kbd><kbd>b</kbd><kbd>^</kbd><kbd>2</kbd><kbd>Space</kbd><kbd>-</kbd><kbd>4</kbd><kbd>a</kbd><kbd>c</kbd><br>
+  <kbd id="shift-left">Shift-Left</kbd> <span id="count">&times; 10</span><br>
+  <kbd>/</kbd><kbd>2</kbd><kbd>a</kbd>
+</p>
+<p id="animation"><span id="math-field-animated" style="min-width: 5em"></span></p>
+
 <script>
 var MQ = MathQuill.getInterface(2); // guaranteed backcompat
 var span = $('#math-field-animated')[0];
@@ -32,32 +39,27 @@ var mathFieldAnimated = MQ.MathField(span, {
 });
 mathFieldAnimated.focus()
 
-var expression = 'x=-b\\pm \\sqrt b^2 -4ac ';
+var expression = 'x=-b\\pm \\sqrt b^2 -4ac';
 var exprLength = expression.length;
-var selectLength = 4;
+var selectLength = 10;
 var expressionDenom = '/2a';
 var nextCharIndex = 0;
 
-var rawStrings = [];
-function typeRaw(raw) {
-  if (raw == '') {
-    rawStrings = [];
-    $('#rawText').html('');
-    return;
+function showNumeratorKeyTyped() {
+  $('#keystrokes kbd').eq(nextCharIndex).addClass('dark');
+  if (nextCharIndex > 0) {
+    $('#keystrokes kbd').eq(nextCharIndex-1).removeClass('dark').addClass('typed');
   }
-
-  rawStrings.push(raw);
-  var charactersToShow = 1;
-  var end = rawStrings.length;
-  var start = Math.max(0, end - charactersToShow);
-  var lastN = rawStrings.slice(start, end);
-
-  var kbdString = '';
-  for (i=0; i<lastN.length; i++) {
-    kbdString = kbdString + '<kbd class="light">' + lastN[i] + '</kbd>';
-  }
-
-  $('#rawText').html(kbdString);
+}
+function showShiftLeftTyped() {
+  $('#keystrokes kbd').eq(exprLength-1).removeClass('dark').addClass('typed');
+  $('#shift-left').addClass('dark');
+  $('#count').addClass('typed').html('&times; ' + (nextCharIndex + 1 - exprLength));
+}
+function showDenominatorKeysTyped() {
+  var i = nextCharIndex - selectLength + 1;
+  $('#keystrokes kbd').eq(i).addClass('dark');
+  $('#keystrokes kbd').eq(i-1).removeClass('dark').addClass('typed');
 }
 
 function typeExpression() {
@@ -66,35 +68,37 @@ function typeExpression() {
     var character = expression[nextCharIndex];
     if (character == ' ') {
       mathFieldAnimated.keystroke('Spacebar');
-      typeRaw('Space');
     } else {
       mathFieldAnimated.typedText(character);
-      typeRaw(character);
     }
+    showNumeratorKeyTyped();
 
   // Select numerator
   } else if (nextCharIndex >= exprLength && nextCharIndex < exprLength + selectLength) {
     mathFieldAnimated.keystroke('Shift-Left');
-    typeRaw('Shift-Left');
+    showShiftLeftTyped();
 
   // Type denominator
   } else {
     var denomIndex = nextCharIndex - (exprLength + selectLength);
     var character = expressionDenom[denomIndex];
     mathFieldAnimated.typedText(character);
-    typeRaw(character);
+    showDenominatorKeysTyped();
   }
 
-  if (nextCharIndex < (exprLength + selectLength + expressionDenom.length - 1)) {
+  if (exprLength <= nextCharIndex && nextCharIndex < exprLength + selectLength) {
    nextCharIndex++;
-   setTimeout(typeExpression, 500);
+   setTimeout(typeExpression, 200);
+  } else if (nextCharIndex < (exprLength + selectLength + expressionDenom.length - 1)) {
+   nextCharIndex++;
+   setTimeout(typeExpression, 400);
   } else {
     setTimeout(function() {
-     typeRaw('');
-    }, 1000);
+      $('#keystrokes kbd:last').removeClass('dark').addClass('typed');
+    }, 400);
   }
 }
-setTimeout(typeExpression, 1000);
+setTimeout(typeExpression, 0);
 </script>
 
 <h3>Abstract</h3>
@@ -103,12 +107,13 @@ setTimeout(typeExpression, 1000);
 <h3>Introduction</h3>
 <p id="introP">Here is a basic eaxmple with code for a MathQuill textbox and the equivalent LaTeX.</p>
 
-<p>MathQuill: <span id="math-field" style="min-width: 5em; min-height: 1.2em"></span></p>
-<p id="latexp">LaTeX: <span id="latex"></span></p>
+<p>MathQuill: <span id="math-field" style="min-width: 5em"></span></p>
+<p>LaTeX: <span id="latex"></span></p>
 
 <script>
-var MQ = MathQuill.getInterface(2); // guaranteed backcompat
 var span = $('#math-field')[0];
+
+var MQ = MathQuill.getInterface(2); // guaranteed backcompat
 var mathField = MQ.MathField(span, {
   spaceBehavesLikeTab: true, // configurable
   handlers: {
@@ -122,12 +127,13 @@ var mathField = MQ.MathField(span, {
 <p>Code:</p>
 <!--- Formatting taken from rouge.jneen.net -->
 <pre class="highlight">
-<span class="nt">&lt;p&gt;</span>MathQuill: <span class="nt">&lt;span</span> <span class="na">id=</span><span class="s">"math-field"</span> <span class="na">style=</span><span class="s">"min-width: 5em; min-height: 1.2em"</span><span class="nt">&gt;&lt;/span&gt;&lt;/p&gt;</span>
-<span class="nt">&lt;p</span> <span class="na">id=</span><span class="s">"latexp"</span><span class="nt">&gt;</span>LaTeX: <span class="nt">&lt;span</span> <span class="na">id=</span><span class="s">"latex"</span><span class="nt">&gt;&lt;/span&gt;&lt;/p&gt;</span>
+<span class="nt">&lt;p&gt;</span>MathQuill: <span class="nt">&lt;span</span> <span class="na">id=</span><span class="s">"math-field"</span> <span class="na">style=</span><span class="s">"min-width: 5em"</span><span class="nt">&gt;&lt;/span&gt;&lt;/p&gt;</span>
+<span class="nt">&lt;p&gt;</span>LaTeX: <span class="nt">&lt;span</span> <span class="na">id=</span><span class="s">"latex"</span><span class="nt">&gt;&lt;/span&gt;&lt;/p&gt;</span>
 
 <span class="nt">&lt;script&gt;</span>
-<span class="kd">var</span> <span class="nx">MQ</span> <span class="o">=</span> <span class="nx">MathQuill</span><span class="p">.</span><span class="nx">getInterface</span><span class="p">(</span><span class="mi">2</span><span class="p">);</span> <span class="c1">// guaranteed backcompat</span>
 <span class="kd">var</span> <span class="nx">span</span> <span class="o">=</span> <span class="nx">$</span><span class="p">(</span><span class="s1">'#math-field'</span><span class="p">)[</span><span class="mi">0</span><span class="p">];</span>
+
+<span class="kd">var</span> <span class="nx">MQ</span> <span class="o">=</span> <span class="nx">MathQuill</span><span class="p">.</span><span class="nx">getInterface</span><span class="p">(</span><span class="mi">2</span><span class="p">);</span> <span class="c1">// guaranteed backcompat</span>
 <span class="kd">var</span> <span class="nx">mathField</span> <span class="o">=</span> <span class="nx">MQ</span><span class="p">.</span><span class="nx">MathField</span><span class="p">(</span><span class="nx">span</span><span class="p">,</span> <span class="p">{</span>
   <span class="na">spaceBehavesLikeTab</span><span class="p">:</span> <span class="kc">true</span><span class="p">,</span> <span class="c1">// configurable</span>
   <span class="na">handlers</span><span class="p">:</span> <span class="p">{</span>
