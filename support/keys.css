@@ -12,8 +12,8 @@
 kbd, .key {
 	display: inline;
 	display: inline-block;
+	min-width: 1em;
 	padding: .2em .3em;
-	margin: .2em 0;
 	font: normal .85em/1 "Lucida Grande", Lucida, Arial, sans-serif;
 	text-align: center;
 	text-decoration: none;
@@ -30,8 +30,8 @@ kbd[title], .key[title] {
 	cursor: help;
 }
 
-/* Dark style for display on light background. <strike>This is the default style.</strike> */
-kbd.dark, .dark-keys kbd, .key, .key.dark, .dark-keys .key {
+/* Dark style for display on light background. This is the default style. */
+kbd, kbd.dark, .dark-keys kbd, .key, .key.dark, .dark-keys .key {
 	background: rgb(80, 80, 80);
 	background: -moz-linear-gradient(top, rgb(60, 60, 60), rgb(80, 80, 80));
 	background: -webkit-gradient(linear, left top, left bottom, from(rgb(60, 60, 60)), to(rgb(80, 80, 80)));
@@ -42,8 +42,8 @@ kbd.dark, .dark-keys kbd, .key, .key.dark, .dark-keys .key {
 	box-shadow: inset 0 0 1px rgb(150, 150, 150), inset 0 -.05em .4em rgb(80, 80, 80), 0 .1em 0 rgb(30, 30, 30), 0 .1em .1em rgba(0, 0, 0, .3);
 }
 
-/* Light style for display on dark background. Han: This is now the default style.*/
-kbd, kbd.light, .light-keys kbd, .key.light, .light-keys .key {
+/* Light style for display on dark background. */
+kbd.light, .light-keys kbd, .key.light, .light-keys .key {
 	background: rgb(250, 250, 250);
 	background: -moz-linear-gradient(top, rgb(210, 210, 210), rgb(255, 255, 255));
 	background: -webkit-gradient(linear, left top, left bottom, from(rgb(210, 210, 210)), to(rgb(255, 255, 255)));
