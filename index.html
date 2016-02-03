@@ -32,69 +32,69 @@ var mathFieldAnimated = MQ.MathField(span, {
 });
 mathFieldAnimated.focus()
 
-expression = "x=-b\\pm \\sqrt b^2 -4ac ";
-exprLength = expression.length
-selectLength = 4
-expressionDenom = "/2a"
-nextCharIndex = 0;
+var expression = 'x=-b\\pm \\sqrt b^2 -4ac ';
+var exprLength = expression.length;
+var selectLength = 4;
+var expressionDenom = '/2a';
+var nextCharIndex = 0;
 
-rawStrings = []
+var rawStrings = [];
 function typeRaw(raw) {
-  if (raw == "") {
-    rawStrings = []
-    $('#rawText').html("");
-    return
+  if (raw == '') {
+    rawStrings = [];
+    $('#rawText').html('');
+    return;
   }
 
   rawStrings.push(raw);
-  charachtersToShow = 1
-  end = rawStrings.length;
-  start = Math.max(0, end - charachtersToShow);
-  lastN = rawStrings.slice(start, end)
+  var charactersToShow = 1;
+  var end = rawStrings.length;
+  var start = Math.max(0, end - charactersToShow);
+  var lastN = rawStrings.slice(start, end);
 
-  kbdString = ""
+  var kbdString = '';
   for (i=0; i<lastN.length; i++) {
-    kbdString = kbdString + "<kbd class=\"light\">" + lastN[i] + "</kbd>"
+    kbdString = kbdString + '<kbd class="light">' + lastN[i] + '</kbd>';
   }
 
   $('#rawText').html(kbdString);
 }
 
-function typeEpression() {
+function typeExpression() {
   // Type numerator
   if (nextCharIndex < exprLength) {
-    charachter = expression[nextCharIndex]
-    if (charachter == " ") {
-      mathFieldAnimated.keystroke("Spacebar")
-      typeRaw("Space")
+    var character = expression[nextCharIndex];
+    if (character == ' ') {
+      mathFieldAnimated.keystroke('Spacebar');
+      typeRaw('Space');
     } else {
-      mathFieldAnimated.typedText(charachter);
-      typeRaw(charachter)
+      mathFieldAnimated.typedText(character);
+      typeRaw(character);
     }
 
   // Select numerator
   } else if (nextCharIndex >= exprLength && nextCharIndex < exprLength + selectLength) {
-    mathFieldAnimated.keystroke("Shift-Left")
-    typeRaw("Shift-Left")
+    mathFieldAnimated.keystroke('Shift-Left');
+    typeRaw('Shift-Left');
 
   // Type denominator
   } else {
-    denomIndex = nextCharIndex - (exprLength + selectLength)
-    charachter = expressionDenom[denomIndex]
-    mathFieldAnimated.typedText(charachter)
-    typeRaw(charachter)
+    var denomIndex = nextCharIndex - (exprLength + selectLength);
+    var character = expressionDenom[denomIndex];
+    mathFieldAnimated.typedText(character);
+    typeRaw(character);
   }
 
   if (nextCharIndex < (exprLength + selectLength + expressionDenom.length - 1)) {
    nextCharIndex++;
-   setTimeout(typeEpression, 500);
+   setTimeout(typeExpression, 500);
   } else {
     setTimeout(function() {
-     typeRaw("")
-   }, 1000);
+     typeRaw('');
+    }, 1000);
   }
 }
-setTimeout(typeEpression, 1000);
+setTimeout(typeExpression, 1000);
 </script>
 
 <h3>Abstract</h3>
