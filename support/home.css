@@ -1,8 +1,8 @@
 body {
   min-height: 100%;
-  max-width: 5.5in;
+  max-width: 6.5in;
   margin: 0 auto;
-  font: 1.2em Symbola, serif;
+  font: 1.5em Symbola, serif;
   color: black;
   background-color: white;
   background-image: url("../images/quill_2_opacity.png");
@@ -13,45 +13,44 @@ h1, #subtitle {
   text-align: center;
 }
 h1 {
-  font-size: 5em;
+  font-size: 4em;
   font-weight: 100;
-  margin: 1em 0 0;
+  margin: .8em 0 0;
 }
 h3 {
   padding-top: 2em;
   margin-bottom: 0;
 }
 #subtitle {
-  font-size: 1.2em;
-  font-weight: normal;
+  font-size: 1.1em;
+  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  font-weight: 200;
   margin: 0;
 }
 p {
   margin: .4em 0;
 }
-#byline a {
-  color: black;
-  font: bold .9em "Helvetica Neue", Helvetica, Arial, sans-serif;
-}
 #animation {
-  padding-top: 6em;
-  padding-bottom: 3em;
-  height: 2.6em;
+  margin: 6em 0;
+  line-height: 3em;
+  position: relative;
 }
 #math-field-animated {
-  text-align: left;
-  border: none;
-  box-shadow: none;
-  font-size: 175%;
+  width: 9.2em;
+  font-size: 1.2em;
+}
+#rawText {
+  font-size: 1.1em;
+  position: absolute;
+
+  display: none;
 }
 #introP {
   padding-bottom: 1em;
 }
-#latexp {
-  padding-bottom: 1em;
-}
-#rawText {
-  font-size: 1.5em;
+#byline a {
+  color: black;
+  font: bold .9em "Helvetica Neue", Helvetica, Arial, sans-serif;
 }
 code {
   background: #eee;
@@ -62,6 +61,9 @@ code {
 }
 code span {
   font: lighter .8em sans-serif;
+}
+#math-field {
+  min-width: 5em;
 }
 #latex {
   font-family: monospace;

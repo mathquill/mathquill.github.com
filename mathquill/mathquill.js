@@ -3245,6 +3245,7 @@ CharCmds['\\'] = P(MathCommand, function(_, super_) {
     } else {
       cursor.insAtRightEnd(this.parent);
     }
+    cursor.show();
 
     var latex = this.ends[L].latex();
     if (!latex) latex = ' ';

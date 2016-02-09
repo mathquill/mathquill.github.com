@@ -21,9 +21,14 @@
 <a href="http://github.com/mathquill/mathquill"><img style="position: absolute; top: 0; right: 0; border: 0;" src="https://s3.amazonaws.com/github/ribbons/forkme_right_white_ffffff.png" alt="Fork me on GitHub!"></a>
 
 <h1>MathQuill</h1>
-<p id="subtitle">Typing Math Made Easy</p>
+<p id="subtitle">Easily type math in your webapp</p>
 
-<p id="animation"><span id="math-field-animated" style="min-width: 10em; min-height: 1.2em"></span> <span id="rawText"></span></p>
+<p id="animation">
+  Easily type math:
+  <span id="math-field-animated"></span>
+  <kbd id="rawText" class="light"></kbd>
+</p>
+
 <script>
 var MQ = MathQuill.getInterface(2); // guaranteed backcompat
 var span = $('#math-field-animated')[0];
@@ -31,35 +36,28 @@ var mathFieldAnimated = MQ.MathField(span, {
   spaceBehavesLikeTab: true
 });
 mathFieldAnimated.focus()
+$(span).focusout(function() {
+  clearTimeout(animationId);
+  $('#rawText').fadeOut(1000);
+});
 
-var expression = 'x=-b\\pm \\sqrt b^2 -4ac ';
+var expression = 'x=-b\\pm \\sqrt b^2 -4ac';
 var exprLength = expression.length;
-var selectLength = 4;
+var selectLength = 10;
 var expressionDenom = '/2a';
 var nextCharIndex = 0;
 
-var rawStrings = [];
 function typeRaw(raw) {
-  if (raw == '') {
-    rawStrings = [];
-    $('#rawText').html('');
-    return;
-  }
-
-  rawStrings.push(raw);
-  var charactersToShow = 1;
-  var end = rawStrings.length;
-  var start = Math.max(0, end - charactersToShow);
-  var lastN = rawStrings.slice(start, end);
-
-  var kbdString = '';
-  for (i=0; i<lastN.length; i++) {
-    kbdString = kbdString + '<kbd class="light">' + lastN[i] + '</kbd>';
-  }
-
-  $('#rawText').html(kbdString);
+  var cursorCoords = $('#animation .mq-cursor, #animation .mq-selection').offset();
+  var containerCoords = $('#animation').offset();
+  $('#rawText').text(raw).css({
+    display: 'inline',
+    top: $('#math-field-animated').offset().top - containerCoords.top + $('#math-field-animated').height() + 10,
+    left: cursorCoords.left - containerCoords.left - ($('#rawText').outerWidth()/2) + 2
+  });
 }
 
+var animationId = setTimeout(typeExpression, 1500);
 function typeExpression() {
   // Type numerator
   if (nextCharIndex < exprLength) {
@@ -76,6 +74,9 @@ function typeExpression() {
   } else if (nextCharIndex >= exprLength && nextCharIndex < exprLength + selectLength) {
     mathFieldAnimated.keystroke('Shift-Left');
     typeRaw('Shift-Left');
+    nextCharIndex++;
+    animationId = setTimeout(typeExpression, 150);
+    return;
 
   // Type denominator
   } else {
@@ -83,52 +84,32 @@ function typeExpression() {
     var character = expressionDenom[denomIndex];
     mathFieldAnimated.typedText(character);
     typeRaw(character);
+    if (denomIndex === 0) {
+      nextCharIndex++;
+      animationId = setTimeout(typeExpression, 600);
+      return;
+    }
   }
 
   if (nextCharIndex < (exprLength + selectLength + expressionDenom.length - 1)) {
    nextCharIndex++;
-   setTimeout(typeExpression, 500);
+   animationId = setTimeout(typeExpression, 500);
   } else {
-    setTimeout(function() {
-     typeRaw('');
-    }, 1000);
+    $('#rawText').fadeOut(1000);
   }
 }
-setTimeout(typeExpression, 1000);
 </script>
 
-<h3>Abstract</h3>
-<p>MathQuill is a formula editor for the web. It's an only slightly buggy, open source, JavaScript library.</p>
+<p>In your webapp:</p>
 
-<h3>Introduction</h3>
-<p id="introP">Here is a basic eaxmple with code for a MathQuill textbox and the equivalent LaTeX.</p>
-
-<p>MathQuill: <span id="math-field" style="min-width: 5em; min-height: 1.2em"></span></p>
-<p id="latexp">LaTeX: <span id="latex"></span></p>
-
-<script>
-var MQ = MathQuill.getInterface(2); // guaranteed backcompat
-var span = $('#math-field')[0];
-var mathField = MQ.MathField(span, {
-  spaceBehavesLikeTab: true, // configurable
-  handlers: {
-    edit: function() { // useful event handlers
-      $('#latex').text(mathField.latex()); // simple API
-    }
-  }
-});
-</script>
-
-<p>Code:</p>
-<!--- Formatting taken from rouge.jneen.net -->
+<!--- Syntax highlighting courtesy of rouge.jneen.net -->
 <pre class="highlight">
-<span class="nt">&lt;p&gt;</span>MathQuill: <span class="nt">&lt;span</span> <span class="na">id=</span><span class="s">"math-field"</span> <span class="na">style=</span><span class="s">"min-width: 5em; min-height: 1.2em"</span><span class="nt">&gt;&lt;/span&gt;&lt;/p&gt;</span>
-<span class="nt">&lt;p</span> <span class="na">id=</span><span class="s">"latexp"</span><span class="nt">&gt;</span>LaTeX: <span class="nt">&lt;span</span> <span class="na">id=</span><span class="s">"latex"</span><span class="nt">&gt;&lt;/span&gt;&lt;/p&gt;</span>
+<span class="nt">&lt;p&gt;</span>Type math here: <span class="nt">&lt;span</span> <span class="na">id=</span><span class="s">"math-field"</span><span class="nt">&gt;&lt;/span&gt;&lt;/p&gt;</span>
+<span class="nt">&lt;p&gt;</span>LaTeX of what you typed: <span class="nt">&lt;span</span> <span class="na">id=</span><span class="s">"latex"</span><span class="nt">&gt;&lt;/span&gt;&lt;/p&gt;</span>
 
 <span class="nt">&lt;script&gt;</span>
 <span class="kd">var</span> <span class="nx">MQ</span> <span class="o">=</span> <span class="nx">MathQuill</span><span class="p">.</span><span class="nx">getInterface</span><span class="p">(</span><span class="mi">2</span><span class="p">);</span> <span class="c1">// guaranteed backcompat</span>
-<span class="kd">var</span> <span class="nx">span</span> <span class="o">=</span> <span class="nx">$</span><span class="p">(</span><span class="s1">'#math-field'</span><span class="p">)[</span><span class="mi">0</span><span class="p">];</span>
-<span class="kd">var</span> <span class="nx">mathField</span> <span class="o">=</span> <span class="nx">MQ</span><span class="p">.</span><span class="nx">MathField</span><span class="p">(</span><span class="nx">span</span><span class="p">,</span> <span class="p">{</span>
+<span class="kd">var</span> <span class="nx">mathField</span> <span class="o">=</span> <span class="nx">MQ</span><span class="p">.</span><span class="nx">MathField</span><span class="p">(</span><span class="nx">$</span><span class="p">(</span><span class="s1">'#math-field'</span><span class="p">)[</span><span class="mi">0</span><span class="p">]</span><span class="p">,</span> <span class="p">{</span>
   <span class="na">spaceBehavesLikeTab</span><span class="p">:</span> <span class="kc">true</span><span class="p">,</span> <span class="c1">// configurable</span>
   <span class="na">handlers</span><span class="p">:</span> <span class="p">{</span>
     <span class="na">edit</span><span class="p">:</span> <span class="kd">function</span><span class="p">()</span> <span class="p">{</span> <span class="c1">// useful event handlers</span>
@@ -139,7 +120,25 @@ var mathField = MQ.MathField(span, {
 <span class="nt">&lt;/script&gt;</span>
 </pre>
 
-<h3>Documentation</h3>
+<p>Type math here: <span id="math-field"></span></p>
+<p>LaTeX of what you typed: <span id="latex"></span></p>
+
+<script>
+var mathFieldSpan = document.getElementById('math-field');
+var latexSpan = document.getElementById('latex');
+
+var MQ = MathQuill.getInterface(2); // guaranteed backcompat
+var mathField = MQ.MathField(mathFieldSpan, {
+  spaceBehavesLikeTab: true, // configurable
+  handlers: {
+    edit: function() { // useful event handlers
+      latexSpan.textContent = mathField.latex(); // simple API
+    }
+  }
+});
+</script>
+
+<h3>Docs + Code</h3>
 <p>For more information about how to use MathQuill checkout <a href="http://github.com/mathquill/mathquill#readme">the project README on GitHub</a>.
 
 <h3>About</h3>
@@ -150,7 +149,8 @@ var mathField = MQ.MathField(span, {
 <p>Contact us about what you want added to MathQuill. We accept contracts to build the features you need.</p>
 
 <h3>Contact Us</h3>
-<p>Slack: <a href="http://slackin.mathquill.com/">http://slackin.mathquill.com/</a></p>
+<p>Join our Slack: <a href="http://slackin.mathquill.com/">http://slackin.mathquill.com/</a></p>
+<p>IRC: #mathquill on Freenode</p>
 <p>Project Contact: Han (<a href="mailto:laughinghan@gmail.com">laughinghan@gmail.com</a>)</p>
 
 <p id="footer"></p>
