@@ -30,16 +30,34 @@ p {
   line-height: 3em;
   position: relative;
 }
+#animation p {
+  margin: 0;
+}
 #math-field-animated {
   width: 9.2em;
   font-size: 1.2em;
   background: white;
 }
 #animation kbd {
-  font-size: 1.1em;
+  font-size: 1em;
   position: absolute;
+  z-index: 1;
 
   display: none;
+}
+#continue-typing {
+  display: none;
+  position: absolute;
+  cursor: pointer;
+
+  font: .7em sans-serif;
+  padding: .2em .5em;
+  border-radius: .5em;
+
+  color: #666;
+  box-shadow:inset 0px 1px 0px 0px #ffffff;
+  background:linear-gradient(to bottom, #ffffff 5%, #f6f6f6 100%);
+  border:1px solid #dcdcdc;
 }
 
 #example {
