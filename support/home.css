@@ -1,15 +1,14 @@
 body {
-  min-height: 100%;
   max-width: 6.5in;
   margin: 0 auto;
   font: 1.5em Symbola, serif;
-  color: black;
-  background-color: white;
   background-image: url("../images/quill_2_opacity.png");
   background-position: 50% 0%;
   background-repeat: no-repeat;
+  padding-bottom: 2em;
 }
-h1, #subtitle {
+
+h1, h2 {
   text-align: center;
 }
 h1 {
@@ -17,19 +16,15 @@ h1 {
   font-weight: 100;
   margin: .8em 0 0;
 }
-h3 {
-  padding-top: 2em;
-  margin-bottom: 0;
-}
-#subtitle {
-  font-size: 1.1em;
-  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
-  font-weight: 200;
+h2 {
+  font: 200 1.1em "Helvetica Neue", Helvetica, Arial, sans-serif;
   margin: 0;
 }
+
 p {
-  margin: .4em 0;
+  margin: .5em 0;
 }
+
 #animation {
   margin: 6em 0;
   line-height: 3em;
@@ -38,39 +33,30 @@ p {
 #math-field-animated {
   width: 9.2em;
   font-size: 1.2em;
+  background: white;
 }
-#rawText {
+#animation kbd {
   font-size: 1.1em;
   position: absolute;
 
   display: none;
 }
-#introP {
-  padding-bottom: 1em;
-}
-#byline a {
-  color: black;
-  font: bold .9em "Helvetica Neue", Helvetica, Arial, sans-serif;
-}
-code {
-  background: #eee;
-  border-radius: .3em;
-  -moz-border-radius: .3em;
-  -webkit-border-radius: .3em;
-  padding: .1em .4em;
-}
-code span {
-  font: lighter .8em sans-serif;
+
+#example {
+  padding: .5em 1em;
+  background: #fcfcfc;
 }
 #math-field {
   min-width: 5em;
+  background: white;
 }
-#latex {
-  font-family: monospace;
-  vertical-align: .1em;
+pre {
+  font-size: .95em;
+  margin-bottom: 3em;
 }
-#footer {
-  padding: 2em;
+
+h3 {
+  margin: 2em 0 0;
 }
 a {
   color: mediumblue;
@@ -84,8 +70,9 @@ a:active {
   color: #400;
   text-shadow: red 0 0 .2em;
 }
-ul {
-  padding-left: 1em;
+#byline a {
+  color: black;
+  font: bold .9em "Helvetica Neue", Helvetica, Arial, sans-serif;
 }
 
 .highlight { background: #FFFFFF; color: #929292 }

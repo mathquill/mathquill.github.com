@@ -21,12 +21,12 @@
 <a href="http://github.com/mathquill/mathquill"><img style="position: absolute; top: 0; right: 0; border: 0;" src="https://s3.amazonaws.com/github/ribbons/forkme_right_white_ffffff.png" alt="Fork me on GitHub!"></a>
 
 <h1>MathQuill</h1>
-<p id="subtitle">Easily type math in your webapp</p>
+<h2>Easily type math in your webapp</h2>
 
 <p id="animation">
   Easily type math:
   <span id="math-field-animated"></span>
-  <kbd id="rawText" class="light"></kbd>
+  <kbd class="light"></kbd>
 </p>
 
 <script>
@@ -38,7 +38,7 @@ var mathFieldAnimated = MQ.MathField(span, {
 mathFieldAnimated.focus()
 $(span).focusout(function() {
   clearTimeout(animationId);
-  $('#rawText').fadeOut(1000);
+  $('kbd').fadeOut(1000);
 });
 
 var expression = 'x=-b\\pm \\sqrt b^2 -4ac';
@@ -50,10 +50,10 @@ var nextCharIndex = 0;
 function typeRaw(raw) {
   var cursorCoords = $('#animation .mq-cursor, #animation .mq-selection').offset();
   var containerCoords = $('#animation').offset();
-  $('#rawText').text(raw).css({
+  $('kbd').text(raw).css({
     display: 'inline',
     top: $('#math-field-animated').offset().top - containerCoords.top + $('#math-field-animated').height() + 10,
-    left: cursorCoords.left - containerCoords.left - ($('#rawText').outerWidth()/2) + 2
+    left: cursorCoords.left - containerCoords.left - ($('kbd').outerWidth()/2) + 2
   });
 }
 
@@ -95,12 +95,32 @@ function typeExpression() {
    nextCharIndex++;
    animationId = setTimeout(typeExpression, 500);
   } else {
-    $('#rawText').fadeOut(1000);
+    $('kbd').fadeOut(1000);
   }
 }
 </script>
 
 <p>In your webapp:</p>
+
+<div id="example">
+  <p>Type math here: <span id="math-field"></span></p>
+  <p>LaTeX of what you typed: <code id="latex"></code></p>
+
+  <script>
+  var mathFieldSpan = document.getElementById('math-field');
+  var latexSpan = document.getElementById('latex');
+
+  var MQ = MathQuill.getInterface(2); // guaranteed backcompat
+  var mathField = MQ.MathField(mathFieldSpan, {
+    spaceBehavesLikeTab: true, // configurable
+    handlers: {
+      edit: function() { // useful event handlers
+        latexSpan.textContent = mathField.latex(); // simple API
+      }
+    }
+  });
+  </script>
+</div>
 
 <!--- Syntax highlighting courtesy of rouge.jneen.net -->
 <pre class="highlight">
@@ -108,51 +128,35 @@ function typeExpression() {
 <span class="nt">&lt;p&gt;</span>LaTeX of what you typed: <span class="nt">&lt;span</span> <span class="na">id=</span><span class="s">"latex"</span><span class="nt">&gt;&lt;/span&gt;&lt;/p&gt;</span>
 
 <span class="nt">&lt;script&gt;</span>
+<span class="kd">var</span> <span class="nx">mathFieldSpan</span> <span class="o">=</span> <span class="nb">document</span><span class="p">.</span><span class="nx">getElementById</span><span class="p">(</span><span class="s1">'math-field'</span><span class="p">);</span>
+<span class="kd">var</span> <span class="nx">latexSpan</span> <span class="o">=</span> <span class="nb">document</span><span class="p">.</span><span class="nx">getElementById</span><span class="p">(</span><span class="s1">'latex'</span><span class="p">);</span>
+
 <span class="kd">var</span> <span class="nx">MQ</span> <span class="o">=</span> <span class="nx">MathQuill</span><span class="p">.</span><span class="nx">getInterface</span><span class="p">(</span><span class="mi">2</span><span class="p">);</span> <span class="c1">// guaranteed backcompat</span>
-<span class="kd">var</span> <span class="nx">mathField</span> <span class="o">=</span> <span class="nx">MQ</span><span class="p">.</span><span class="nx">MathField</span><span class="p">(</span><span class="nx">$</span><span class="p">(</span><span class="s1">'#math-field'</span><span class="p">)[</span><span class="mi">0</span><span class="p">]</span><span class="p">,</span> <span class="p">{</span>
+<span class="kd">var</span> <span class="nx">mathField</span> <span class="o">=</span> <span class="nx">MQ</span><span class="p">.</span><span class="nx">MathField</span><span class="p">(</span><span class="nx">mathFieldSpan</span><span class="p">,</span> <span class="p">{</span>
   <span class="na">spaceBehavesLikeTab</span><span class="p">:</span> <span class="kc">true</span><span class="p">,</span> <span class="c1">// configurable</span>
   <span class="na">handlers</span><span class="p">:</span> <span class="p">{</span>
     <span class="na">edit</span><span class="p">:</span> <span class="kd">function</span><span class="p">()</span> <span class="p">{</span> <span class="c1">// useful event handlers</span>
-      <span class="nx">$</span><span class="p">(</span><span class="s1">'#latex'</span><span class="p">).</span><span class="nx">text</span><span class="p">(</span><span class="nx">mathField</span><span class="p">.</span><span class="nx">latex</span><span class="p">());</span> <span class="c1">// simple API</span>
+      <span class="nx">latexSpan</span><span class="p">.</span><span class="nx">textContent</span> <span class="o">=</span> <span class="nx">mathField</span><span class="p">.</span><span class="nx">latex</span><span class="p">();</span> <span class="c1">// simple API</span>
     <span class="p">}</span>
   <span class="p">}</span>
 <span class="p">});</span>
 <span class="nt">&lt;/script&gt;</span>
 </pre>
 
-<p>Type math here: <span id="math-field"></span></p>
-<p>LaTeX of what you typed: <span id="latex"></span></p>
-
-<script>
-var mathFieldSpan = document.getElementById('math-field');
-var latexSpan = document.getElementById('latex');
-
-var MQ = MathQuill.getInterface(2); // guaranteed backcompat
-var mathField = MQ.MathField(mathFieldSpan, {
-  spaceBehavesLikeTab: true, // configurable
-  handlers: {
-    edit: function() { // useful event handlers
-      latexSpan.textContent = mathField.latex(); // simple API
-    }
-  }
-});
-</script>
-
-<h3>Docs + Code</h3>
-<p>For more information about how to use MathQuill checkout <a href="http://github.com/mathquill/mathquill#readme">the project README on GitHub</a>.
+<h3>Docs</h3>
+<p>See the <a href="http://github.com/mathquill/mathquill#readme">README</a> on GitHub.</p>
 
 <h3>About</h3>
-<p id="byline">MathQuill is written and maintained by <a href="http://github.com/laughinghan" title="Han">@laughinghan</a>, <a href="http://github.com/jneen" title="Jeanine">@jneen</a>, and <a href="http://github.com/stufflebear" title="Mary">@stufflebear</a>.</p>
-<p>MathQuill has been helped by contributions and input from <a href="http://desmos.com">Desmos</a>, whose <a href="http://desmos.com/calculator">slick graphing calculator</a> makes extensive use of it.</p>
+<p id="byline">MathQuill is an open source formula editor for the Web written and maintained by <a href="http://github.com/laughinghan" title="Han">@laughinghan</a>, <a href="http://github.com/jneen" title="Jeanine">@jneen</a>, and <a href="http://github.com/stufflebear" title="Mary">@stufflebear</a>.</p>
 
-<h3>Want More?</h3>
-<p>Contact us about what you want added to MathQuill. We accept contracts to build the features you need.</p>
+<h3>Sponsors</h3>
+<p>MathQuill is supported by sponsors like <a href="http://desmos.com">Desmos</a>, whose <a href="http://desmos.com/calculator">slick graphing calculator</a> uses us to edit functions.</p>
+<p>Want to sponsor a bugfix or new feature? <a href="mailto:laughinghan@gmail.com">Contact us!</a></p>
 
-<h3>Contact Us</h3>
-<p>Join our Slack: <a href="http://slackin.mathquill.com/">http://slackin.mathquill.com/</a></p>
+<h3>Community</h3>
+<p>Slack: Sign up at <a href="http://slackin.mathquill.com">slackin.mathquill.com</a></p>
 <p>IRC: #mathquill on Freenode</p>
 <p>Project Contact: Han (<a href="mailto:laughinghan@gmail.com">laughinghan@gmail.com</a>)</p>
 
-<p id="footer"></p>
 </body>
 </html>
