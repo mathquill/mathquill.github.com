@@ -47,35 +47,35 @@ var selectLength = 10;
 var expressionDenom = '/2a';
 var nextCharIndex = 0;
 
-function typeRaw(raw) {
+function showKeystroke(key) {
   var cursorCoords = $('#animation .mq-cursor, #animation .mq-selection').offset();
   var containerCoords = $('#animation').offset();
-  $('kbd').text(raw).css({
+  $('kbd').text(key).css({
     display: 'inline',
     top: $('#math-field-animated').offset().top - containerCoords.top + $('#math-field-animated').height() + 10,
     left: cursorCoords.left - containerCoords.left - ($('kbd').outerWidth()/2) + 2
   });
 }
 
-var animationId = setTimeout(typeExpression, 1500);
-function typeExpression() {
+var animationId = setTimeout(animateTyping, 1500);
+function animateTyping() {
   // Type numerator
   if (nextCharIndex < exprLength) {
     var character = expression[nextCharIndex];
     if (character == ' ') {
       mathFieldAnimated.keystroke('Spacebar');
-      typeRaw('Space');
+      showKeystroke('Space');
     } else {
       mathFieldAnimated.typedText(character);
-      typeRaw(character);
+      showKeystroke(character);
     }
 
   // Select numerator
   } else if (nextCharIndex >= exprLength && nextCharIndex < exprLength + selectLength) {
     mathFieldAnimated.keystroke('Shift-Left');
-    typeRaw('Shift-Left');
+    showKeystroke('Shift-Left');
     nextCharIndex++;
-    animationId = setTimeout(typeExpression, 150);
+    animationId = setTimeout(animateTyping, 150);
     return;
 
   // Type denominator
@@ -83,17 +83,17 @@ function typeExpression() {
     var denomIndex = nextCharIndex - (exprLength + selectLength);
     var character = expressionDenom[denomIndex];
     mathFieldAnimated.typedText(character);
-    typeRaw(character);
+    showKeystroke(character);
     if (denomIndex === 0) {
       nextCharIndex++;
-      animationId = setTimeout(typeExpression, 600);
+      animationId = setTimeout(animateTyping, 600);
       return;
     }
   }
 
   if (nextCharIndex < (exprLength + selectLength + expressionDenom.length - 1)) {
    nextCharIndex++;
-   animationId = setTimeout(typeExpression, 500);
+   animationId = setTimeout(animateTyping, 500);
   } else {
     $('kbd').fadeOut(1000);
   }
