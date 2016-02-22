@@ -9,48 +9,167 @@
 
 <link rel="stylesheet" type="text/css" href="support/home.css">
 <link rel="stylesheet" type="text/css" href="mathquill/mathquill.css">
+<link rel="stylesheet" type="text/css" href="support/keys.css">
+<link rel="icon" type="image/png" href="images/quill_transparant_favicon.png">
 
-<style type="text/css">
-p small {
-  font: 90% Verdana, sans-serif;
-}
-</style>
+<script type="text/javascript" src="http://ajax.googleapis.com/ajax/libs/jquery/1.7.1/jquery.min.js"></script>
+<script type="text/javascript" src="mathquill/mathquill.js"></script>
 
 </head>
 <body>
-<div id="body">
 
 <a href="http://github.com/mathquill/mathquill"><img style="position: absolute; top: 0; right: 0; border: 0;" src="https://s3.amazonaws.com/github/ribbons/forkme_right_white_ffffff.png" alt="Fork me on GitHub!"></a>
 
-<h1>MathQuill <small>by <a href="http://github.com/laughinghan">Han</a> and <a href="http://github.com/jneen">Jeanine</a></small></h1>
+<h1>MathQuill</h1>
+<h2>Easily type math in your webapp</h2>
 
-<p><i>WYSIWYG math with only HTML, CSS and JS</i>
+<p id="animation">
+  Easily type math:
+  <span id="math-field-animated"></span>
+  <kbd class="light"></kbd>
+  <span id="continue-typing">continue typing</span>
+</p>
 
-<p>Try typing <code>x^2</code>: <span class="mathquill-editable"></span>
-<br>Backspace and try <code>3/4</code>, try <code>\sqrt x</code>, try <code>\sin\theta </code>.
-<br>Move around with the arrow keys, click, drag, cut and paste like any other textbox.
-
-<p>See our <a href="demo.html">thorough demo</a> for more features, textbox variants and the public API.
-
-<p>MathQuill renders LaTeX math as semantically rich HTML and presents it as human-readable math by styling with CSS. Showcasing the power of the HTML DOM, this math is WYSIWYG editable.
-
-<p>Current development is proudly supported by <a href="http://desmos.com">Desmos</a>, whose <a href="http://desmos.com/calculator">awesome graphing calculator</a> makes extensive use of MathQuill.</p>
-
-<h3>Usage</h3>
-
-<p>Want to use it on your website? See <a href="http://github.com/mathquill/mathquill#readme">the project README on GitHub</a>.
-
-<h3>Project Contact</h3>
-<p>Han (<a href="mailto:laughinghan@gmail.com">laughinghan@gmail.com</a>)</p>
-
-</div>
-<script type="text/javascript" src="http://ajax.googleapis.com/ajax/libs/jquery/1.7.1/jquery.min.js"></script>
-<script type="text/javascript" src="mathquill/mathquill.min.js"></script>
-<script type="text/javascript">
-$(function() {
-  $('.mathquill-editable').focus();
+<script>
+var MQ = MathQuill.getInterface(2); // for backcompat
+var mathFieldAnimated = MQ.MathField($('#math-field-animated')[0], {
+  spaceBehavesLikeTab: true
 });
+mathFieldAnimated.focus()
+$('#math-field-animated').focusout(function() {
+  clearTimeout(animationId);
+  $('kbd').fadeOut(1000);
+  var containerCoords = $('#animation').offset();
+  var mathFieldCoords = $('#math-field-animated').offset();
+  $('#continue-typing').show().css({
+    top: mathFieldCoords.top - containerCoords.top + $('#math-field-animated').height() + 12,
+    left: mathFieldCoords.left - containerCoords.left + ($('#math-field-animated').width() - $('#continue-typing').outerWidth())/2
+  });
+});
+$('#continue-typing').click(function() {
+  $(this).hide();
+  mathFieldAnimated.focus()
+  animateTyping();
+});
+
+var expression = 'x=-b\\pm \\sqrt b^2 -4ac';
+var exprLength = expression.length;
+var selectLength = 10;
+var expressionDenom = '/2a';
+var nextCharIndex = 0;
+
+function showKeystroke(key) {
+  var cursorCoords = $('#animation .mq-cursor, #animation .mq-selection').offset();
+  var containerCoords = $('#animation').offset();
+  $('kbd').text(key).stop().css({
+    display: 'inline',
+    opacity: 1,
+    top: $('#math-field-animated').offset().top - containerCoords.top + $('#math-field-animated').height() + 10,
+    left: cursorCoords.left - containerCoords.left - ($('kbd').outerWidth()/2) + 2
+  });
+}
+
+var animationId = setTimeout(animateTyping, 1500);
+function animateTyping() {
+  // Type numerator
+  if (nextCharIndex < exprLength) {
+    var character = expression[nextCharIndex];
+    if (character == ' ') {
+      mathFieldAnimated.keystroke('Spacebar');
+      showKeystroke('Space');
+    } else {
+      mathFieldAnimated.typedText(character);
+      showKeystroke(character);
+    }
+
+  // Select numerator
+  } else if (nextCharIndex >= exprLength && nextCharIndex < exprLength + selectLength) {
+    mathFieldAnimated.keystroke('Shift-Left');
+    showKeystroke('Shift-Left');
+    nextCharIndex++;
+    animationId = setTimeout(animateTyping, 150);
+    return;
+
+  // Type denominator
+  } else {
+    var denomIndex = nextCharIndex - (exprLength + selectLength);
+    var character = expressionDenom[denomIndex];
+    mathFieldAnimated.typedText(character);
+    showKeystroke(character);
+    if (denomIndex === 0) {
+      nextCharIndex++;
+      animationId = setTimeout(animateTyping, 600);
+      return;
+    }
+  }
+
+  if (nextCharIndex < (exprLength + selectLength + expressionDenom.length - 1)) {
+   nextCharIndex++;
+   animationId = setTimeout(animateTyping, 500);
+  } else {
+    $('kbd').fadeOut(1000);
+    $('#math-field-animated').off('focusout');
+  }
+}
 </script>
+
+<p>In your webapp:</p>
+
+<div id="example">
+  <p>Type math here: <span id="math-field"></span></p>
+  <p>LaTeX of what you typed: <code id="latex"></code></p>
+
+  <script>
+  var mathFieldSpan = document.getElementById('math-field');
+  var latexSpan = document.getElementById('latex');
+
+  var MQ = MathQuill.getInterface(2); // for backcompat
+  var mathField = MQ.MathField(mathFieldSpan, {
+    spaceBehavesLikeTab: true, // configurable
+    handlers: {
+      edit: function() { // useful event handlers
+        latexSpan.textContent = mathField.latex(); // simple API
+      }
+    }
+  });
+  </script>
+</div>
+
+<!--- Syntax highlighting courtesy of rouge.jneen.net -->
+<pre class="highlight">
+<span class="nt">&lt;p&gt;</span>Type math here: <span class="nt">&lt;span</span> <span class="na">id=</span><span class="s">"math-field"</span><span class="nt">&gt;&lt;/span&gt;&lt;/p&gt;</span>
+<span class="nt">&lt;p&gt;</span>LaTeX of what you typed: <span class="nt">&lt;span</span> <span class="na">id=</span><span class="s">"latex"</span><span class="nt">&gt;&lt;/span&gt;&lt;/p&gt;</span>
+
+<span class="nt">&lt;script&gt;</span>
+<span class="kd">var</span> <span class="nx">mathFieldSpan</span> <span class="o">=</span> <span class="nb">document</span><span class="p">.</span><span class="nx">getElementById</span><span class="p">(</span><span class="s1">'math-field'</span><span class="p">);</span>
+<span class="kd">var</span> <span class="nx">latexSpan</span> <span class="o">=</span> <span class="nb">document</span><span class="p">.</span><span class="nx">getElementById</span><span class="p">(</span><span class="s1">'latex'</span><span class="p">);</span>
+
+<span class="kd">var</span> <span class="nx">MQ</span> <span class="o">=</span> <span class="nx">MathQuill</span><span class="p">.</span><span class="nx">getInterface</span><span class="p">(</span><span class="mi">2</span><span class="p">);</span> <span class="c1">// for backcompat</span>
+<span class="kd">var</span> <span class="nx">mathField</span> <span class="o">=</span> <span class="nx">MQ</span><span class="p">.</span><span class="nx">MathField</span><span class="p">(</span><span class="nx">mathFieldSpan</span><span class="p">,</span> <span class="p">{</span>
+  <span class="na">spaceBehavesLikeTab</span><span class="p">:</span> <span class="kc">true</span><span class="p">,</span> <span class="c1">// configurable</span>
+  <span class="na">handlers</span><span class="p">:</span> <span class="p">{</span>
+    <span class="na">edit</span><span class="p">:</span> <span class="kd">function</span><span class="p">()</span> <span class="p">{</span> <span class="c1">// useful event handlers</span>
+      <span class="nx">latexSpan</span><span class="p">.</span><span class="nx">textContent</span> <span class="o">=</span> <span class="nx">mathField</span><span class="p">.</span><span class="nx">latex</span><span class="p">();</span> <span class="c1">// simple API</span>
+    <span class="p">}</span>
+  <span class="p">}</span>
+<span class="p">});</span>
+<span class="nt">&lt;/script&gt;</span>
+</pre>
+
+<h3>Docs</h3>
+<p>See the <a href="http://github.com/mathquill/mathquill#readme">README</a> on GitHub.</p>
+
+<h3>About</h3>
+<p id="byline">MathQuill is an open source formula editor for the Web written and maintained by <a href="http://github.com/laughinghan" title="Han">@laughinghan</a>, <a href="http://github.com/jneen" title="Jeanine">@jneen</a>, and <a href="http://github.com/stufflebear" title="Mary">@stufflebear</a>.</p>
+
+<h3>Sponsors</h3>
+<p>MathQuill is supported by sponsors like <a href="http://desmos.com">Desmos</a>, whose <a href="http://desmos.com/calculator">slick graphing calculator</a> uses us to edit functions.</p>
+<p>Want to sponsor a bugfix or new feature? <a href="mailto:laughinghan@gmail.com">Contact us!</a></p>
+
+<h3>Community</h3>
+<p>Slack: Sign up at <a href="http://slackin.mathquill.com">slackin.mathquill.com</a></p>
+<p>IRC: #mathquill on Freenode</p>
+<p>Project Contact: Han (<a href="mailto:laughinghan@gmail.com">laughinghan@gmail.com</a>)</p>
 
 </body>
 </html>

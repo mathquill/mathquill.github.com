@@ -1,6 +1,6 @@
 /*
  * MathQuill: http://mathquill.com
- * by Jeanine and Han (laughinghan@gmail.com)
+ * by Jeanine (jneen@jneen.net) and Han (laughinghan@gmail.com)
  *
  * This Source Code Form is subject to the terms of the
  * Mozilla Public License, v. 2.0. If a copy of the MPL
@@ -15,21 +15,6 @@
 .mq-editable-field {
   display: -moz-inline-box;
   display: inline-block;
-}
-.mq-editable-field .mq-root-block {
-  display: -moz-inline-box;
-  display: inline-block;
-  width: 100%;
-  padding: 2px;
-  -webkit-box-sizing: border-box;
-  -moz-box-sizing: border-box;
-  box-sizing: border-box;
-  white-space: pre;
-  overflow: hidden;
-  vertical-align: middle;
-}
-.mq-editable-field .mq-root-block:after {
-  content: '';
 }
 .mq-editable-field .mq-cursor {
   border-left: 1px solid black;
@@ -90,6 +75,19 @@
   overflow-x: auto;
   overflow-y: hidden;
 }
+.mq-root-block,
+.mq-math-mode .mq-root-block {
+  display: -moz-inline-box;
+  display: inline-block;
+  width: 100%;
+  padding: 2px;
+  -webkit-box-sizing: border-box;
+  -moz-box-sizing: border-box;
+  box-sizing: border-box;
+  white-space: nowrap;
+  overflow: hidden;
+  vertical-align: middle;
+}
 .mq-math-mode {
   font-variant: normal;
   font-weight: normal;
@@ -119,6 +117,7 @@
   -webkit-user-select: none;
   -moz-user-select: none;
   user-select: none;
+  box-sizing: border-box;
 }
 .mq-math-mode .mq-empty {
   background: #ccc;
@@ -148,12 +147,12 @@
 .mq-math-mode i.mq-font {
   font-style: italic;
 }
-.mq-math-mode var.mq-florin {
-  display: -moz-inline-box;
-  display: inline-block;
-  width: .3em;
-  position: relative;
-  left: -0.1em;
+.mq-math-mode var.mq-f {
+  margin-right: 0.1em;
+  margin-left: 0.1em;
+}
+.mq-math-mode .mq-roman var.mq-f {
+  margin: 0;
 }
 .mq-math-mode big {
   font-size: 125%;
@@ -280,14 +279,12 @@
   border-top: 1px solid;
   float: right;
   width: 100%;
-  padding: .15em .1em 0 .1em;
-  margin-right: -0.1em;
-  margin-left: -0.1em;
+  padding: 0.1em;
 }
 .mq-math-mode .mq-sqrt-prefix {
   padding-top: 0;
   position: relative;
-  top: .05em;
+  top: 0.1em;
   vertical-align: top;
   -webkit-transform-origin: top;
   -moz-transform-origin: top;
@@ -386,6 +383,7 @@
   user-select: text;
   position: absolute;
   clip: rect(1em 1em 1em 1em);
+  font-size: 0;
   resize: none;
   width: 1px;
   height: 1px;
