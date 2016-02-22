@@ -1,6 +1,6 @@
 /*
- * MathQuill: http://mathquill.com
- * by Jeanine (jneen@jneen.net) and Han (laughinghan@gmail.com)
+ * MathQuill v0.10.0               http://mathquill.com
+ * by Han, Jeanine, and Mary  maintainers@mathquill.com
  *
  * This Source Code Form is subject to the terms of the
  * Mozilla Public License, v. 2.0. If a copy of the MPL
@@ -10,7 +10,7 @@
 @font-face {
   font-family: Symbola;
   src: url(font/Symbola-basic.eot);
-  src: local("Symbola Regular"), local("Symbola"), url(font/Symbola-basic.ttf) format("truetype");
+  src: local("Symbola Regular"), local("Symbola"), url(font/Symbola-basic.woff2) format("woff2"), url(font/Symbola-basic.woff) format("woff"), url(font/Symbola-basic.ttf) format("truetype");
 }
 .mq-editable-field {
   display: -moz-inline-box;

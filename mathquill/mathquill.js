@@ -1,6 +1,6 @@
 /**
- * MathQuill: http://mathquill.com
- * by Jeanine (jneen@jneen.net) and Han (laughinghan@gmail.com)
+ * MathQuill v0.10.0               http://mathquill.com
+ * by Han, Jeanine, and Mary  maintainers@mathquill.com
  *
  * This Source Code Form is subject to the terms of the
  * Mozilla Public License, v. 2.0. If a copy of the MPL
@@ -912,13 +912,15 @@ var API = {}, Options = P(), optionProcessors = {}, Progenote = P();
  */
 function insistOnInterVer() {
   if (window.console) console.warn(
-    'This usage of the MathQuill API will fail in v1.0.0. The easiest fix is ' +
-    'to get interface version 1 before doing anything else:\n' +
+    'You are using the MathQuill API without specifying an interface version, ' +
+    'which will fail in v1.0.0. You can fix this easily by doing this before ' +
+    'doing anything else:\n' +
     '\n' +
     '    MathQuill = MathQuill.getInterface(1);\n' +
     '    // now MathQuill.MathField() works like it used to\n' +
-    ' '
-//   ^ apparently necessary to show the empty line in Blink/WebKit
+    '\n' +
+    'See also the "`dev` branch (2014\u20132015) \u2192 v0.10.0 Migration Guide" at\n' +
+    '  https://github.com/mathquill/mathquill/wiki/%60dev%60-branch-(2014%E2%80%932015)-%E2%86%92-v0.10.0-Migration-Guide'
   );
 }
 // globally exported API object
@@ -930,7 +932,21 @@ MathQuill.prototype = Progenote.p;
 MathQuill.interfaceVersion = function(v) {
   // shim for #459-era interface versioning (ended with #495)
   if (v !== 1) throw 'Only interface version 1 supported. You specified: ' + v;
-  return window.MathQuill = MQ1;
+  insistOnInterVer = function() {
+    if (window.console) console.warn(
+      'You called MathQuill.interfaceVersion(1); to specify the interface ' +
+      'version, which will fail in v1.0.0. You can fix this easily by doing ' +
+      'this before doing anything else:\n' +
+      '\n' +
+      '    MathQuill = MathQuill.getInterface(1);\n' +
+      '    // now MathQuill.MathField() works like it used to\n' +
+      '\n' +
+      'See also the "`dev` branch (2014\u20132015) \u2192 v0.10.0 Migration Guide" at\n' +
+      '  https://github.com/mathquill/mathquill/wiki/%60dev%60-branch-(2014%E2%80%932015)-%E2%86%92-v0.10.0-Migration-Guide'
+    );
+  };
+  insistOnInterVer();
+  return MathQuill;
 };
 MathQuill.getInterface = getInterface;
 
@@ -1101,7 +1117,6 @@ function getInterface(v) {
 
   return MQ;
 }
-var MQ1 = getInterface(1);
 
 MathQuill.noConflict = function() {
   window.MathQuill = origMathQuill;
@@ -3245,7 +3260,6 @@ CharCmds['\\'] = P(MathCommand, function(_, super_) {
     } else {
       cursor.insAtRightEnd(this.parent);
     }
-    cursor.show();
 
     var latex = this.ends[L].latex();
     if (!latex) latex = ' ';
@@ -3479,15 +3493,14 @@ LatexCmds.lceil = bind(VanillaSymbol, '\\lceil ', '&#8968;');
 LatexCmds.rceil = bind(VanillaSymbol, '\\rceil ', '&#8969;');
 LatexCmds.opencurlybrace = LatexCmds.lbrace = bind(VanillaSymbol, '\\lbrace ', '{');
 LatexCmds.closecurlybrace = LatexCmds.rbrace = bind(VanillaSymbol, '\\rbrace ', '}');
+LatexCmds.lbrack = bind(VanillaSymbol, '[');
+LatexCmds.rbrack = bind(VanillaSymbol, ']');
 
 //various symbols
 
 LatexCmds['\u222b'] =
 LatexCmds['int'] =
 LatexCmds.integral = bind(Symbol,'\\int ','<big>&int;</big>');
-
-LatexCmds.caret = bind(VanillaSymbol,'\\text{^}','^');
-LatexCmds.underscore = bind(VanillaSymbol,'\\_','_');
 
 LatexCmds.slash = bind(VanillaSymbol, '/');
 LatexCmds.vert = bind(VanillaSymbol,'|');
@@ -3726,12 +3739,12 @@ var Letter = P(Variable, function(_, super_) {
 var BuiltInOpNames = {}; // http://latex.wikia.com/wiki/List_of_LaTeX_symbols#Named_operators:_sin.2C_cos.2C_etc.
   // except for over/under line/arrow \lim variants like \varlimsup
 var TwoWordOpNames = { limsup: 1, liminf: 1, projlim: 1, injlim: 1 };
+var AutoOpNames = Options.p.autoOperatorNames = { _maxLength: 9 };
 (function() {
-  var autoOps = Options.p.autoOperatorNames = { _maxLength: 9 };
   var mostOps = ('arg deg det dim exp gcd hom inf ker lg lim ln log max min sup'
                  + ' limsup liminf injlim projlim Pr').split(' ');
   for (var i = 0; i < mostOps.length; i += 1) {
-    BuiltInOpNames[mostOps[i]] = autoOps[mostOps[i]] = 1;
+    BuiltInOpNames[mostOps[i]] = AutoOpNames[mostOps[i]] = 1;
   }
 
   var builtInTrigs = // why coth but not sech and csch, LaTeX?
@@ -3742,11 +3755,18 @@ var TwoWordOpNames = { limsup: 1, liminf: 1, projlim: 1, injlim: 1 };
 
   var autoTrigs = 'sin cos tan sec cosec csc cotan cot ctg'.split(' ');
   for (var i = 0; i < autoTrigs.length; i += 1) {
-    autoOps[autoTrigs[i]] =
-    autoOps['arc'+autoTrigs[i]] =
-    autoOps[autoTrigs[i]+'h'] =
-    autoOps['ar'+autoTrigs[i]+'h'] =
-    autoOps['arc'+autoTrigs[i]+'h'] = 1;
+    AutoOpNames[autoTrigs[i]] =
+    AutoOpNames['arc'+autoTrigs[i]] =
+    AutoOpNames[autoTrigs[i]+'h'] =
+    AutoOpNames['ar'+autoTrigs[i]+'h'] =
+    AutoOpNames['arc'+autoTrigs[i]+'h'] = 1;
+  }
+
+  // compat with some of the nonstandard LaTeX exported by MathQuill
+  // before #247. None of these are real LaTeX commands so, seems safe
+  var moreNonstandardOps = 'gcf hcf lcm proj span'.split(' ');
+  for (var i = 0; i < moreNonstandardOps.length; i += 1) {
+    AutoOpNames[moreNonstandardOps[i]] = 1;
   }
 }());
 optionProcessors.autoOperatorNames = function(cmds) {
@@ -3782,7 +3802,7 @@ var OperatorName = P(Symbol, function(_, super_) {
     return Parser.succeed(block.children());
   };
 });
-for (var fn in BuiltInOpNames) if (BuiltInOpNames.hasOwnProperty(fn)) {
+for (var fn in AutoOpNames) if (AutoOpNames.hasOwnProperty(fn)) {
   LatexCmds[fn] = OperatorName;
 }
 LatexCmds.operatorname = P(MathCommand, function(_) {
@@ -4784,6 +4804,7 @@ LatexCmds.choose = P(Binomial, function(_) {
   _.createLeftOf = LiveFraction.prototype.createLeftOf;
 });
 
+LatexCmds.editable = // backcompat with before cfd3620 on #233
 LatexCmds.MathQuillMathField = P(MathCommand, function(_, super_) {
   _.ctrlSeq = '\\MathQuillMathField';
   _.htmlTemplate =
@@ -4813,6 +4834,7 @@ LatexCmds.MathQuillMathField = P(MathCommand, function(_, super_) {
   _.latex = function(){ return this.ends[L].latex(); };
   _.text = function(){ return this.ends[L].text(); };
 });
+var MQ1 = getInterface(1);
 for (var key in MQ1) (function(key, val) {
   if (typeof val === 'function') {
     MathQuill[key] = function() {
