@@ -31,7 +31,7 @@
 </p>
 
 <script>
-var MQ = MathQuill.getInterface(2); // guaranteed backcompat
+var MQ = MathQuill.getInterface(2); // for backcompat
 var mathFieldAnimated = MQ.MathField($('#math-field-animated')[0], {
   spaceBehavesLikeTab: true
 });
@@ -123,7 +123,7 @@ function animateTyping() {
   var mathFieldSpan = document.getElementById('math-field');
   var latexSpan = document.getElementById('latex');
 
-  var MQ = MathQuill.getInterface(2); // guaranteed backcompat
+  var MQ = MathQuill.getInterface(2); // for backcompat
   var mathField = MQ.MathField(mathFieldSpan, {
     spaceBehavesLikeTab: true, // configurable
     handlers: {
@@ -144,7 +144,7 @@ function animateTyping() {
 <span class="kd">var</span> <span class="nx">mathFieldSpan</span> <span class="o">=</span> <span class="nb">document</span><span class="p">.</span><span class="nx">getElementById</span><span class="p">(</span><span class="s1">'math-field'</span><span class="p">);</span>
 <span class="kd">var</span> <span class="nx">latexSpan</span> <span class="o">=</span> <span class="nb">document</span><span class="p">.</span><span class="nx">getElementById</span><span class="p">(</span><span class="s1">'latex'</span><span class="p">);</span>
 
-<span class="kd">var</span> <span class="nx">MQ</span> <span class="o">=</span> <span class="nx">MathQuill</span><span class="p">.</span><span class="nx">getInterface</span><span class="p">(</span><span class="mi">2</span><span class="p">);</span> <span class="c1">// guaranteed backcompat</span>
+<span class="kd">var</span> <span class="nx">MQ</span> <span class="o">=</span> <span class="nx">MathQuill</span><span class="p">.</span><span class="nx">getInterface</span><span class="p">(</span><span class="mi">2</span><span class="p">);</span> <span class="c1">// for backcompat</span>
 <span class="kd">var</span> <span class="nx">mathField</span> <span class="o">=</span> <span class="nx">MQ</span><span class="p">.</span><span class="nx">MathField</span><span class="p">(</span><span class="nx">mathFieldSpan</span><span class="p">,</span> <span class="p">{</span>
   <span class="na">spaceBehavesLikeTab</span><span class="p">:</span> <span class="kc">true</span><span class="p">,</span> <span class="c1">// configurable</span>
   <span class="na">handlers</span><span class="p">:</span> <span class="p">{</span>
