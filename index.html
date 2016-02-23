@@ -27,7 +27,7 @@
   Easily type math:
   <span id="math-field-animated"></span>
   <kbd class="light"></kbd>
-  <span id="continue-typing">continue typing</span>
+  <span id="continue-typing">demo typing</span>
 </p>
 
 <script>
@@ -36,7 +36,7 @@ var mathFieldAnimated = MQ.MathField($('#math-field-animated')[0], {
   spaceBehavesLikeTab: true
 });
 mathFieldAnimated.focus()
-$('#math-field-animated').focusout(function() {
+$('#math-field-animated').on('focusout mousedown keydown', function() {
   clearTimeout(animationId);
   $('kbd').fadeOut(1000);
   var containerCoords = $('#animation').offset();
@@ -48,8 +48,35 @@ $('#math-field-animated').focusout(function() {
 });
 $('#continue-typing').click(function() {
   $(this).hide();
-  mathFieldAnimated.focus()
-  animateTyping();
+  mathFieldAnimated.focus();
+
+  var alteredLatex = mathFieldAnimated.latex();
+
+  // make sure we're back in the state we were before the
+  // viewer interacted with the math field, by clearing it
+  // then insta-running the whole typing sequence
+  mathFieldAnimated.latex('');
+  for (var i = 0; i < nextCharIndex; i += 1) {
+    // Type numerator
+    if (i < exprLength) {
+      if (expression[i] === ' ') mathFieldAnimated.keystroke('Spacebar');
+      else mathFieldAnimated.typedText(expression[i]);
+    // Select numerator
+    } else if (i >= exprLength && i < exprLength + selectLength) {
+      mathFieldAnimated.keystroke('Shift-Left');
+    // Type denominator
+    } else {
+      mathFieldAnimated.typedText(expressionDenom[i - exprLength - selectLength]);
+    }
+  }
+
+  // if the LaTeX hadn't been altered at all, forge ahead with typing
+  if (mathFieldAnimated.latex() === alteredLatex) {
+    animateTyping();
+  // but if it had been altered and was just reset, standard brief pause
+  } else {
+   animationId = setTimeout(animateTyping, 500);
+  }
 });
 
 var expression = 'x=-b\\pm \\sqrt b^2 -4ac';
