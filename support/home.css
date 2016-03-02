@@ -1,32 +1,106 @@
 body {
-  max-width: 6.5in;
-  margin: 0 auto;
+  margin: 0;
   font: 1.5em Symbola, serif;
-  background-image: url("../images/quill_2_opacity.png");
-  background-position: 50% 0%;
-  background-repeat: no-repeat;
-  padding-bottom: 2em;
 }
 
-h1, h2 {
-  text-align: center;
+/* navbar layout & basic styling */
+nav {
+  color: #f8f8f8;
+  background: black;
+  line-height: 1.4em;
 }
-h1 {
-  font-size: 4em;
-  font-weight: 100;
-  margin: .8em 0 0;
+nav div span.selected {
+  color: black;
+  background: white;
 }
-h2 {
-  font: 200 1.1em "Helvetica Neue", Helvetica, Arial, sans-serif;
-  margin: 0;
+#nav-home, nav div * {
+  display: inline-block;
+  padding: 0 .6em;
+}
+#nav-home {
+  float: left;
+  font-size: 1.2em;
+  padding-left: .2em;
+}
+nav div {
+  max-width: 5in;
+  margin: 0 auto;
+}
+
+
+/* navbar link styling & hover effects */
+#nav-home, nav a {
+  color: inherit;
+  overflow: hidden; /* clip glow from link hover effect */
+
+  /* Without overflow:hidden, baseline of an inline-block is the baseline of
+   * the text inside, like you'd expect. However, overflow:hidden causes the
+   * baseline to be the bottom of the border-box, which if aligned with the
+   * baseline of the line box containing the inline-block, results in extra
+   * space in the div & nav for the (potential) descenders of the line box.
+   * In this case that results in unwanted black padding inside the black
+   * background nav.
+   * This aligns the bottom of the inline-block with the bottom of the div &
+   * nav's line box (which is below the descenders of the line box):         */
+  vertical-align: bottom;
+}
+nav a:hover {
+  color: #fff8ff;
+  text-shadow: white 0 0 10px, #60F 0 0 11px, #60F 0 0 12px, #60F 0 0 13px, #60F 0 0 14px, #60F 0 0 15px, #60F 0 0 16px, #60F 0 0 17px, #60F 0 0 18px, #60F 0 0 19px, #60F 0 0 20px;
+}
+nav a:active {
+  color: #fff8f8;
+  text-shadow: white 0 0 10px, red 0 0 11px, red 0 0 12px, red 0 0 13px, red 0 0 14px;
+}
+a#nav-home:hover {
+  /* can't share text-shadow with the other links because the larger font-size causes
+   * the glow effect to appear overstated/brighter than the others. This rule is the
+   * same as the others except toned down to match them in apparent brightness. */
+  text-shadow: white 0 0 10px, #60F 0 0 11px, #60F 0 0 12px, #60F 0 0 13px, #60F 0 0 14px, #60F 0 0 15px;
+}
+a#nav-home:active {
+  text-shadow: white 0 0 10px, red 0 0 11px, red 0 0 12px, red 0 0 13px;
+}
+
+/* modern GitHub corners: http://tholman.com/github-corners/ */
+.github-corner:hover .octo-arm {
+    animation: octocat-wave 560ms ease-in-out
+}
+@keyframes octocat-wave {
+    0%, 100% {
+        transform: rotate(0)
+    }
+    20%,
+    60% {
+        transform: rotate(-25deg)
+    }
+    40%,
+    80% {
+        transform: rotate(10deg)
+    }
+}
+@media (max-width: 500px) {
+    .github-corner:hover .octo-arm {
+        animation: none
+    }
+    .github-corner .octo-arm {
+        animation: octocat-wave 560ms ease-in-out
+    }
+}
+
+main {
+  max-width: 6.5in;
+  margin: 0 auto;
+  padding-bottom: 2em;
 }
 
 p {
   margin: .5em 0;
+  line-height: 1.2em;
 }
 
 #animation {
-  margin: 6em 0;
+  margin: 8em 0;
   line-height: 3em;
   position: relative;
 }
@@ -82,15 +156,15 @@ a {
 }
 a:hover {
   color: black;
-  text-shadow: #40F 0 0 .2em;
+  text-shadow: #60F 0 0 .2em;
 }
 a:active {
   color: #400;
   text-shadow: red 0 0 .2em;
 }
-#byline a {
-  color: black;
-  font: bold .9em "Helvetica Neue", Helvetica, Arial, sans-serif;
+
+p.new-section {
+  margin-top: 2em;
 }
 
 .highlight { background: #FFFFFF; color: #929292 }

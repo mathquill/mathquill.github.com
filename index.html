@@ -5,20 +5,73 @@
 
 <meta name="viewport" content="width=624">
 
-<title>MathQuill - WYSIWYG math using only HTML and CSS</title>
+<title>MathQuill: Easily type math into your webapp</title>
 
 <link rel="stylesheet" type="text/css" href="support/home.css">
 <link rel="stylesheet" type="text/css" href="lib/mathquill-0.10.0.css">
 <link rel="stylesheet" type="text/css" href="support/keys.css">
 <link rel="icon" type="image/png" href="images/quill_transparant_favicon.png">
 
+<style>
+main {
+  background-image: url("../images/quill_2_opacity.png");
+  background-position: 50% 0%;
+  background-repeat: no-repeat;
+}
+h1, h2 {
+  text-align: center;
+}
+h1 {
+  font-size: 4em;
+  font-weight: 200;
+  margin: .8em 0 0;
+}
+h2 {
+  font: 200 1.1em "Helvetica Neue", Helvetica, Arial, sans-serif;
+  margin: 0;
+}
+h3:target {
+  background: #F4ECFF;
+  margin: 1.9em -.2em -.1em -.2em;
+  padding: .1em .2em;
+}
+
+#community-links * {
+  vertical-align: middle;
+}
+#community-links > * {
+  padding-right: 1.5em;
+}
+code {
+  font-size: 1.1em;
+}
+
+
+.github-mention {
+  color: black;
+  font: .9em "Helvetica Neue", Helvetica, Arial, sans-serif;
+}
+a.github-mention {
+  font-weight: bold;
+}
+</style>
+
 <script type="text/javascript" src="http://ajax.googleapis.com/ajax/libs/jquery/1.7.2/jquery.min.js"></script>
 <script type="text/javascript" src="lib/mathquill-0.10.0.js"></script>
 
 </head>
 <body>
-
-<a href="http://github.com/mathquill/mathquill"><img style="position: absolute; top: 0; right: 0; border: 0;" src="https://s3.amazonaws.com/github/ribbons/forkme_right_white_ffffff.png" alt="Fork me on GitHub!"></a>
+<nav>
+  <span id="nav-home">MathQuill</span>
+  <a href="http://github.com/mathquill/mathquill" class="github-corner"><svg width="100" height="100" viewBox="0 0 250 250" style="fill: #508; color: white; border: 0; float: right;"><title>Fork me on GitHub</title><path d="M0,0 L115,115 L130,115 L142,142 L250,250 L250,0 Z"></path><path d="M128.3,109.0 C113.8,99.7 119.0,89.6 119.0,89.6 C122.0,82.7 120.5,78.6 120.5,78.6 C119.2,72.0 123.4,76.3 123.4,76.3 C127.3,80.9 125.5,87.3 125.5,87.3 C122.9,97.6 130.6,101.9 134.4,103.2" fill="currentColor" style="transform-origin: 130px 106px;" class="octo-arm"></path><path d="M115.0,115.0 C114.9,115.1 118.7,116.5 119.8,115.4 L133.7,101.6 C136.9,99.2 139.9,98.4 142.2,98.6 C133.8,88.0 127.5,74.4 143.8,58.0 C148.5,53.4 154.0,51.2 159.7,51.0 C160.3,49.4 163.2,43.6 171.4,40.1 C171.4,40.1 176.1,42.5 178.8,56.2 C183.1,58.6 187.2,61.8 190.9,65.4 C194.5,69.0 197.7,73.2 200.1,77.6 C213.8,80.2 216.3,84.9 216.3,84.9 C212.7,93.1 206.9,96.0 205.4,96.6 C205.1,102.4 203.0,107.8 198.3,112.5 C181.9,128.9 168.3,122.5 157.7,114.1 C157.9,116.9 156.7,120.9 152.7,124.9 L141.0,136.5 C139.8,137.7 141.6,141.9 141.8,141.8 Z" fill="currentColor" class="octo-body"></path></svg></a>
+  <div>
+    <a href="/#community" id="nav-community">Community</a>
+    <a href="http://github.com/mathquill/mathquill#readme">Docs</a>
+    <a href="http://github.com/mathquill/mathquill">Source</a>
+    <a href="/sponsors.html">Sponsors</a>
+  </div>
+</nav>
+<main>
 
 <h1>MathQuill</h1>
 <h2>Easily type math in your webapp</h2>
@@ -183,20 +236,22 @@ function animateTyping() {
 <span class="nt">&lt;/script&gt;</span>
 </pre>
 
-<h3>Docs</h3>
+<h3>Usage</h3>
 <p>See the <a href="http://github.com/mathquill/mathquill#readme">README</a> on GitHub.</p>
 
+<h3 id="community">Community</h3>
+<p>We love offering help and receiving feedback:</p>
+<p id="community-links"><script async defer src="http://slackin.mathquill.com/slackin.js?large"></script> <a href="irc://irc.freenode.net/mathquill"><img alt="IRC: #mathquill on Freenode" src="https://img.shields.io/badge/irc-%23mathquill-brightgreen.svg" style="height: 1.2em" /></a> <a href="https://twitter.com/intent/tweet?screen_name=MathQuill" class="twitter-mention-button" data-size="large" data-related="MathQuill" data-dnt="true">Tweet to @MathQuill</a>
+<p>Or, email us: <a href="mailto:maintainers@mathquill.com"><code>maintainers@mathquill.com</code></a></p>
+<script>!function(d,s,id){var js,fjs=d.getElementsByTagName(s)[0],p=/^http:/.test(d.location)?'http':'https';if(!d.getElementById(id)){js=d.createElement(s);js.id=id;js.src=p+'://platform.twitter.com/widgets.js';fjs.parentNode.insertBefore(js,fjs);}}(document, 'script', 'twitter-wjs');</script></p>
+<p class="new-section">MathQuill partners with sponsors like <a href="http://desmos.com">Desmos</a>, whose <a href="http://desmos.com/calculator">slick graphing calculator</a> uses MathQuill to edit functions.</p>
+<p>If you use MathQuill, <a href="/sponsors.html">sponsor us</a> so we can work more closely with you.</p>
+
 <h3>About</h3>
-<p id="byline">MathQuill is an open source formula editor for the Web written and maintained by <a href="http://github.com/laughinghan" title="Han">@laughinghan</a>, <a href="http://github.com/jneen" title="Jeanine">@jneen</a>, and <a href="http://github.com/stufflebear" title="Mary">@stufflebear</a>.</p>
+<p>MathQuill is an open source formula editor for the Web maintained by <a href="http://github.com/laughinghan" title="Han" class="github-mention">@laughinghan</a> and <a href="http://github.com/stufflebear" title="Mary" class="github-mention">@stufflebear</a>.</p>
+<p>MathQuill was born of a need to communicate math. The creators, <span class="github-mention">@laughinghan</span> and <a href="http://github.com/jneen" title="Jeanine" class="github-mention">@jneen</a>, used LaTeX for projects together, but struggled to collaborate online once they were apart. They wanted a tool to both write and read math without resorting to ugly flat text or more cumbersome conventions.</p>
+<p>After a couple of iterations, MathQuill had become widely useful. Today, MathQuill is used in educational software, math visualizations, collaborative editors, and more.</p>
 
-<h3>Sponsors</h3>
-<p>MathQuill is supported by sponsors like <a href="http://desmos.com">Desmos</a>, whose <a href="http://desmos.com/calculator">slick graphing calculator</a> uses us to edit functions.</p>
-<p>Want to sponsor a bugfix or new feature? <a href="mailto:laughinghan@gmail.com">Contact us!</a></p>
-
-<h3>Community</h3>
-<p>Slack: Sign up at <a href="http://slackin.mathquill.com">slackin.mathquill.com</a></p>
-<p>IRC: #mathquill on Freenode</p>
-<p>Project Contact: Han (<a href="mailto:laughinghan@gmail.com">laughinghan@gmail.com</a>)</p>
-
+</main>
 </body>
 </html>
