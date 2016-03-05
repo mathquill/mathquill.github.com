@@ -35,6 +35,86 @@ h3:target {
   padding: .1em .2em;
 }
 
+#pre-sponsor-tree {
+  margin-bottom: 0;
+}
+#sponsor-tree {
+  margin-top: 0;
+  height: 280px;
+  position: relative;
+}
+#quill_small {
+  width: 100px;
+
+  position: absolute;
+  top: 0;
+  left: 250px;
+}
+#sponsor-tree .line {
+  border-left: 2px gray dashed;
+
+  display: inline-block;
+  position: absolute;
+  transform-origin: 0 0;
+}
+#sapientdocs-line {
+  height: 105px;
+  top: 93px;
+  left: 232px;
+  transform: rotate(69deg);
+}
+#sapientdocs {
+  width: 120px;
+
+  position: absolute;
+  top: 107px;
+  left: 0;
+}
+#desmos-line {
+  height: 108px;
+  top: 109px;
+  left: 284px;
+  transform: rotate(19deg);
+}
+#desmos {
+  width: 170px;
+
+  position: absolute;
+  top: 221px;
+  left: 160px;
+}
+#you-line {
+  height: 114px;
+
+  position: absolute;
+  left: 352px;
+  top: 103px;
+  transform: rotate(-70deg);
+}
+#you {
+  display: inline-block;
+
+  position: absolute;
+  top: 132px;
+  left: 478px;
+
+  line-height: 1.2;
+  font-size: 30px;
+  font-family: Helvetica, Arial, sans-serif;
+  color: #aaa;
+
+  border-radius: 1em;
+  border: solid 3px;
+  padding: 0 .6em;
+  margin-bottom: .2em;
+
+  box-shadow: 2px 3px 2px lightgray;
+}
+#you:hover {
+  color: black;
+  text-shadow: none;
+}
+
 #community-links * {
   vertical-align: middle;
 }
@@ -243,8 +323,21 @@ function animateTyping() {
 <p id="community-links"><script async defer src="http://slackin.mathquill.com/slackin.js?large"></script> <a href="irc://irc.freenode.net/mathquill" title="IRC: #mathquill on Freenode"><img alt="IRC: #mathquill on Freenode" src="https://img.shields.io/badge/irc-%23mathquill-brightgreen.svg" style="height: 1.2em" /></a> <a href="https://twitter.com/intent/tweet?screen_name=MathQuill" class="twitter-mention-button" data-size="large" data-related="MathQuill" data-dnt="true">Tweet to @MathQuill</a>
 <p>Or, email us: <a href="mailto:maintainers@mathquill.com"><code>maintainers@mathquill.com</code></a></p>
 <script>!function(d,s,id){var js,fjs=d.getElementsByTagName(s)[0],p=/^http:/.test(d.location)?'http':'https';if(!d.getElementById(id)){js=d.createElement(s);js.id=id;js.src=p+'://platform.twitter.com/widgets.js';fjs.parentNode.insertBefore(js,fjs);}}(document, 'script', 'twitter-wjs');</script></p>
-<p class="new-section">MathQuill partners with sponsors like <a href="http://desmos.com">Desmos</a>, whose <a href="http://desmos.com/calculator">slick graphing calculator</a> uses MathQuill to edit functions.</p>
-<p>If you use MathQuill, <a href="/sponsors.html">sponsor us</a> so we can work more closely with you.</p>
+
+<p id="pre-sponsor-tree" class="new-section">Proud members include our <a href="/sponsors.html">innovative sponsors</a>,  such as our Vellum Partners:</p>
+<!--
+<p>MathQuill partners with sponsors like <a href="http://desmos.com">Desmos</a>, whose <a href="http://desmos.com/calculator">slick graphing calculator</a> uses MathQuill to edit functions.</p>
+<p id="pre-sponsor-tree">If you use MathQuill, <a href="/sponsors.html">sponsor us</a> so we can work more closely with you:</p>
+-->
+<p id="sponsor-tree">
+  <img id="quill_small" src="/images/quill_small.png">
+  <span class="line" id="sapientdocs-line"></span>
+  <img id="sapientdocs" src="/images/sponsor_logos/sapientdocs.png">
+  <span class="line" id="desmos-line"></span>
+  <img id="desmos" src="/images/sponsor_logos/desmos.png">
+  <span class="line" id="you-line"></span>
+  <a id="you" href="/sponsors.html">You</a>
+</p>
 
 <h3>About</h3>
 <p>MathQuill is an open source formula editor for the Web maintained by <a href="http://github.com/laughinghan" title="Han" class="github-mention">@laughinghan</a> and <a href="http://github.com/stufflebear" title="Mary" class="github-mention">@stufflebear</a>.</p>
