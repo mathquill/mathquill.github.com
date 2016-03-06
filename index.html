@@ -39,7 +39,6 @@ h3:target {
   margin-bottom: 0;
 }
 #sponsor-tree {
-  margin-top: 0;
   height: 280px;
   position: relative;
 }
@@ -51,7 +50,7 @@ h3:target {
   left: 250px;
 }
 #sponsor-tree .line {
-  border-left: 2px gray dashed;
+  border-left: solid 1px lightgray;
 
   display: inline-block;
   position: absolute;
@@ -88,31 +87,41 @@ h3:target {
 
   position: absolute;
   left: 352px;
-  top: 103px;
-  transform: rotate(-70deg);
+  top: 87px;
+  transform: rotate(-72deg);
 }
 #you {
-  display: inline-block;
+  margin: 0;
 
   position: absolute;
-  top: 132px;
-  left: 478px;
+  top: 100px;
+  left: 475px;
 
-  line-height: 1.2;
-  font-size: 30px;
   font-family: Helvetica, Arial, sans-serif;
   color: #aaa;
 
-  border-radius: 1em;
-  border: solid 3px;
-  padding: 0 .6em;
-  margin-bottom: .2em;
-
-  box-shadow: 2px 3px 2px lightgray;
+  font-size: 18px;
+  line-height: 1.2;
 }
-#you:hover {
+#you a {
+  color: #6e6ee2;
+}
+#you a:hover {
   color: black;
+}
+#you #your-logo { /* lol specificity war with `#you a:hover` */
+  display: block;
+  text-align: center;
+  color: inherit;
   text-shadow: none;
+
+  line-height: 45px;
+  font-size: 20px;
+
+  border-radius: .5em;
+  border: dashed 2px;
+  padding: 0 45px;
+  margin-bottom: .2em;
 }
 
 #community-links * {
@@ -324,20 +333,19 @@ function animateTyping() {
 <p>Or, email us: <a href="mailto:maintainers@mathquill.com"><code>maintainers@mathquill.com</code></a></p>
 <script>!function(d,s,id){var js,fjs=d.getElementsByTagName(s)[0],p=/^http:/.test(d.location)?'http':'https';if(!d.getElementById(id)){js=d.createElement(s);js.id=id;js.src=p+'://platform.twitter.com/widgets.js';fjs.parentNode.insertBefore(js,fjs);}}(document, 'script', 'twitter-wjs');</script></p>
 
-<p id="pre-sponsor-tree" class="new-section">Proud members include our <a href="/sponsors.html">innovative sponsors</a>,  such as our Vellum Partners:</p>
-<!--
-<p>MathQuill partners with sponsors like <a href="http://desmos.com">Desmos</a>, whose <a href="http://desmos.com/calculator">slick graphing calculator</a> uses MathQuill to edit functions.</p>
-<p id="pre-sponsor-tree">If you use MathQuill, <a href="/sponsors.html">sponsor us</a> so we can work more closely with you:</p>
--->
-<p id="sponsor-tree">
+<p id="pre-sponsor-tree" class="new-section">We range from <a href="https://github.com/mathquill/mathquill/graphs/contributors">individual hobbyists</a> to corporate sponsors:</p>
+<div id="sponsor-tree">
   <img id="quill_small" src="/images/quill_small.png">
   <span class="line" id="sapientdocs-line"></span>
   <img id="sapientdocs" src="/images/sponsor_logos/sapientdocs.png">
   <span class="line" id="desmos-line"></span>
   <img id="desmos" src="/images/sponsor_logos/desmos.png">
   <span class="line" id="you-line"></span>
-  <a id="you" href="/sponsors.html">You</a>
-</p>
+  <p id="you">
+    <a id="your-logo" href="/sponsors.html" title="this could be us but you playin'">You</a>
+    Use MathQuill? <a href="/sponsors.html">Sponsor us</a> so we can work more closely with you!
+  </p>
+</div>
 
 <h3>About</h3>
 <p>MathQuill is an open source formula editor for the Web maintained by <a href="http://github.com/laughinghan" title="Han" class="github-mention">@laughinghan</a> and <a href="http://github.com/stufflebear" title="Mary" class="github-mention">@stufflebear</a>.</p>
