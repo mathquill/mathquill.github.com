@@ -137,6 +137,7 @@ p {
 #example {
   padding: .5em 1em;
   background: #fcfcfc;
+  border: solid 1px #eee;
 }
 #math-field {
   min-width: 5em;
