@@ -20,7 +20,34 @@ h1 {
   text-align: center;
 }
 ul {
-  margin: 0;
+  margin: .5em;
+}
+
+.partner {
+  margin: 2em 0;
+
+  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  font-size: .8em;
+  color: #666;
+}
+.partner p, .partner img {
+  display: inline-block;
+  vertical-align: middle;
+}
+/* Note: <main> is 6.5in wide = 624px */
+#sapientdocs img {
+  width: 150px;
+  margin-right: 24px;
+}
+#sapientdocs p.description {
+  width: 450px;
+}
+#desmos p.description {
+  width: 350px;
+}
+#desmos img {
+  width: 250px;
+  margin-left: 24px;
 }
 </style>
 
@@ -48,15 +75,23 @@ ul {
   <li>We work closely with you on issues, features, and roadmap items that matter to you
   <li>Dedicated support channels
   <li>Your logo and link on our homepage
-  <li>...and all the benefits below:
+  <li>...and all the benefits of the tiers below
 </ul>
+<div id="sapientdocs" class="partner">
+  <p><a title="Coming soon!"><img src="/images/sponsor_logos/sapientdocs.png"></a>
+  <p class="description">A forthcoming project by the maintainers of MathQuill, Sapient Docs will use MathQuill to make computations easy to read and edit.
+</div>
+<div id="desmos" class="partner">
+  <p class="description"><a href="http://desmos.com">Desmos</a> uses MathQuill to edit functions in their <a href="http://desmos.com/calculator">slick graphing calculator</a>.
+  <p><a href="http://desmos.com"><img src="/images/sponsor_logos/desmos.png"></a>
+</div>
 
 <h3>Parchment Partners (≥$5K/yr)</h3>
 <ul>
   <li>1 free consultation per year to discuss your use case&rsquo;s needs and wants
   <li>Priority responsiveness to your Issues, PRs, Slack and email questions
   <li>Your logo and link on our website
-  <li>...and all the benefits below:
+  <li>...and all the benefits of the tier below
 </ul>
 
 <h3>All Sponsors (any amount)</h3>
