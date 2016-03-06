@@ -1,6 +1,9 @@
 body {
   margin: 0;
-  font: 1.5em Symbola, serif;
+  font: 1.5em/1.2 Symbola, serif;
+}
+h1, h2, h3 {
+  line-height: 1;
 }
 
 /* navbar layout & basic styling */
@@ -96,7 +99,6 @@ main {
 
 p {
   margin: .5em 0;
-  line-height: 1.2em;
 }
 
 #animation {
