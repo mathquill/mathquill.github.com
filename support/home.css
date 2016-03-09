@@ -49,7 +49,7 @@ nav div {
 }
 nav a:hover {
   color: #fff8ff;
-  text-shadow: white 0 0 10px, #60F 0 0 11px, #60F 0 0 12px, #60F 0 0 13px, #60F 0 0 14px, #60F 0 0 15px, #60F 0 0 16px, #60F 0 0 17px, #60F 0 0 18px, #60F 0 0 19px, #60F 0 0 20px;
+  text-shadow: white 0 0 10px, white 0 0 11px, white 0 0 12px, #60F 0 0 13px, #60F 0 0 14px, #60F 0 0 15px, #60F 0 0 16px;
 }
 nav a:active {
   color: #fff8f8;
