@@ -158,6 +158,15 @@ a.github-mention {
     <a href="http://github.com/mathquill/mathquill">Source</a>
     <a href="/partners.html">Partners</a>
   </div>
+
+  <script>
+  $('#nav-community').click(function() {
+    $('html, body').stop().animate({
+      scrollTop: $('#community').offset().top,
+    }, 600, 'swing', function() { location.hash = '#community'; });
+    return false;
+  });
+  </script>
 </nav>
 <main>
 
