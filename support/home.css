@@ -59,7 +59,7 @@ a#nav-home:hover {
   /* can't share text-shadow with the other links because the larger font-size causes
    * the glow effect to appear overstated/brighter than the others. This rule is the
    * same as the others except toned down to match them in apparent brightness. */
-  text-shadow: white 0 0 10px, #60F 0 0 11px, #60F 0 0 12px, #60F 0 0 13px, #60F 0 0 14px, #60F 0 0 15px;
+  text-shadow: white 0 0 10px, white 0 0 11px, #60F 0 0 13px, #60F 0 0 14px, #60F 0 0 15px;
 }
 a#nav-home:active {
   text-shadow: white 0 0 10px, red 0 0 11px, red 0 0 12px, red 0 0 13px;
