@@ -53,7 +53,7 @@ nav a:hover {
 }
 nav a:active {
   color: #fff8f8;
-  text-shadow: white 0 0 10px, red 0 0 11px, red 0 0 12px, red 0 0 13px, red 0 0 14px;
+  text-shadow: white 0 0 10px, white 0 0 11px, white 0 0 15px, red 0 0 13px, red 0 0 14px, red 0 0 15px, red 0 0 16px;
 }
 a#nav-home:hover {
   /* can't share text-shadow with the other links because the larger font-size causes
@@ -62,7 +62,7 @@ a#nav-home:hover {
   text-shadow: white 0 0 10px, white 0 0 11px, #60F 0 0 13px, #60F 0 0 14px, #60F 0 0 15px;
 }
 a#nav-home:active {
-  text-shadow: white 0 0 10px, red 0 0 11px, red 0 0 12px, red 0 0 13px;
+  text-shadow: white 0 0 10px, white 0 0 11px, red 0 0 12px, red 0 0 13px, red 0 0 16px;
 }
 
 /* modern GitHub corners: http://tholman.com/github-corners/ */
