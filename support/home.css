@@ -1,3 +1,8 @@
+/* fix HTML5 elements in IE8-11, Safari 4 */
+nav, main {
+  display: block;
+}
+
 body {
   margin: 0;
   font: 1.5em/1.2 Symbola, serif;
@@ -128,12 +133,23 @@ p {
 
   font: .7em sans-serif;
   padding: .2em .5em;
+  -webkit-border-radius: .5em;
   border-radius: .5em;
 
   color: #444;
-  box-shadow:inset 0px 1px 0px 0px #ffffff;
-  background:linear-gradient(to bottom, #ffffff 5%, #f6f6f6 100%);
   border:1px solid #dcdcdc;
+
+  -webkit-box-shadow:inset 0px 1px 0px 0px #ffffff;
+  box-shadow:inset 0px 1px 0px 0px #ffffff;
+
+  /* thanks http://colorzilla.com/gradient-editor/#ffffff+5,f6f6f6+100 */
+  background: -moz-linear-gradient(top, #ffffff 5%, #f6f6f6 100%); /* FF3.6-15 */
+  background: -webkit-gradient(linear, left top, left bottom, color-stop(5%,#ffffff), color-stop(100%,#f6f6f6)); /* Chrome4-9,Safari4-5 */
+  background: -webkit-linear-gradient(top, #ffffff 5%,#f6f6f6 100%); /* Chrome10-25,Safari5.1-6 */
+  background: -o-linear-gradient(top, #ffffff 5%,#f6f6f6 100%); /* Opera 11.10-11.50 */
+  background: -ms-linear-gradient(top, #ffffff 5%,#f6f6f6 100%); /* IE10 preview */
+  background: linear-gradient(to bottom, #ffffff 5%,#f6f6f6 100%); /* W3C, IE10+, FF16+, Chrome26+, Opera12+, Safari7+ */
+  filter: progid:DXImageTransform.Microsoft.gradient( startColorstr='#ffffff', endColorstr='#f6f6f6',GradientType=0 ); /* IE6-9 */
 }
 
 #example {
