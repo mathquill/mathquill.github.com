@@ -212,7 +212,7 @@ var mathFieldAnimated = MQ.MathField($('#math-field-animated')[0], {
   spaceBehavesLikeTab: true
 });
 mathFieldAnimated.focus()
-$('#math-field-animated').on('focusout mousedown keydown', function() {
+$('#math-field-animated').on('focusout.animation mousedown.animation keydown.animation', function() {
   clearTimeout(animationId);
   $('kbd').fadeOut(1000);
   var containerCoords = $('#animation').offset();
@@ -311,7 +311,7 @@ function animateTyping() {
    animationId = setTimeout(animateTyping, 500);
   } else {
     $('kbd').fadeOut(1000);
-    $('#math-field-animated').off('focusout mousedown keydown');
+    $('#math-field-animated').off('.animation');
   }
 }
 </script>
