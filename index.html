@@ -311,7 +311,7 @@ function animateTyping() {
    animationId = setTimeout(animateTyping, 500);
   } else {
     $('kbd').fadeOut(1000);
-    $('#math-field-animated').off('focusout');
+    $('#math-field-animated').off('focusout mousedown keydown');
   }
 }
 </script>
