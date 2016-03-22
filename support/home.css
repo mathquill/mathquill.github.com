@@ -28,7 +28,7 @@ nav div span.selected {
 #nav-home {
   float: left;
   font-size: 1.2em;
-  padding-left: .2em;
+  padding: 0 .2em;
 }
 nav div {
   max-width: 5in;
@@ -39,35 +39,12 @@ nav div {
 /* navbar link styling & hover effects */
 #nav-home, nav a {
   color: inherit;
-  overflow: hidden; /* clip glow from link hover effect */
-
-  /* Without overflow:hidden, baseline of an inline-block is the baseline of
-   * the text inside, like you'd expect. However, overflow:hidden causes the
-   * baseline to be the bottom of the border-box, which if aligned with the
-   * baseline of the line box containing the inline-block, results in extra
-   * space in the div & nav for the (potential) descenders of the line box.
-   * In this case that results in unwanted black padding inside the black
-   * background nav.
-   * This aligns the bottom of the inline-block with the bottom of the div &
-   * nav's line box (which is below the descenders of the line box):         */
-  vertical-align: bottom;
 }
 nav a:hover {
-  color: #fff8ff;
-  text-shadow: white 0 0 10px, white 0 0 11px, white 0 0 12px, #60F 0 0 13px, #60F 0 0 14px, #60F 0 0 15px, #60F 0 0 16px;
+  background: #555;
 }
-nav a:active {
-  color: #fff8f8;
-  text-shadow: white 0 0 10px, white 0 0 11px, white 0 0 15px, red 0 0 13px, red 0 0 14px, red 0 0 15px, red 0 0 16px;
-}
-a#nav-home:hover {
-  /* can't share text-shadow with the other links because the larger font-size causes
-   * the glow effect to appear overstated/brighter than the others. This rule is the
-   * same as the others except toned down to match them in apparent brightness. */
-  text-shadow: white 0 0 10px, white 0 0 11px, #60F 0 0 13px, #60F 0 0 14px, #60F 0 0 15px;
-}
-a#nav-home:active {
-  text-shadow: white 0 0 10px, white 0 0 11px, red 0 0 12px, red 0 0 13px, red 0 0 16px;
+nav a:before {
+  display: none;
 }
 
 /* modern GitHub corners: http://tholman.com/github-corners/ */
@@ -171,14 +148,29 @@ h3 {
 a {
   color: mediumblue;
   text-decoration: none;
+  position: relative;
 }
-a:hover {
-  color: black;
-  text-shadow: #60F 0 0 .2em;
+a:before {
+  content: "";
+  position: absolute;
+  bottom: 2px;
+  left: 0;
+  right: 0;
+
+  height: 2px;
+  background-color: transparent;
+  background-color: currentColor;
+  opacity: 0;
+
+  -webkit-transition: 0.3s ease-in-out;
+  transition: 0.3s ease-in-out;
 }
-a:active {
-  color: #400;
-  text-shadow: red 0 0 .2em;
+a:hover:before {
+  opacity: .8;
+  bottom: -2px;
+}
+a.no-underline:before {
+  display: none;
 }
 
 p.new-section {

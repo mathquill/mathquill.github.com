@@ -125,14 +125,10 @@ h3:target {
 #you a {
   color: #6e6ee2;
 }
-#you a:hover {
-  color: black;
-}
-#you #your-logo { /* lol specificity war with `#you a:hover` */
+#you #your-logo { /* lol specificity war with `#you a` */
   display: block;
   text-align: center;
   color: inherit;
-  text-shadow: none;
 
   line-height: 45px;
   font-size: 20px;
@@ -140,7 +136,6 @@ h3:target {
   -webkit-border-radius: .5em;
   border-radius: .5em;
   border: dashed 2px;
-  padding: 0 45px;
   margin-bottom: .2em;
 }
 
@@ -364,7 +359,7 @@ function animateTyping() {
 
 <h3 id="community">Community</h3>
 <p>We love offering help and receiving feedback:</p>
-<p id="community-links"><script async defer src="http://slackin.mathquill.com/slackin.js?large"></script> <a href="irc://irc.freenode.net/mathquill"><img alt="freenode irc: #mathquill" src="https://img.shields.io/badge/freenode%20irc-%23mathquill-brightgreen.svg" style="height: 1.2em" /></a> <a href="https://twitter.com/intent/tweet?screen_name=MathQuill" class="twitter-mention-button" data-size="large" data-related="MathQuill" data-dnt="true">Tweet to @MathQuill</a>
+<p id="community-links"><script async defer src="http://slackin.mathquill.com/slackin.js?large"></script> <a href="irc://irc.freenode.net/mathquill" class="no-underline"><img alt="freenode irc: #mathquill" src="https://img.shields.io/badge/freenode%20irc-%23mathquill-brightgreen.svg" style="height: 1.2em" /></a> <a href="https://twitter.com/intent/tweet?screen_name=MathQuill" class="twitter-mention-button" data-size="large" data-related="MathQuill" data-dnt="true">Tweet to @MathQuill</a>
 <p>Or, email us: <a href="mailto:maintainers@mathquill.com"><code>maintainers@mathquill.com</code></a></p>
 <script>!function(d,s,id){var js,fjs=d.getElementsByTagName(s)[0],p=/^http:/.test(d.location)?'http':'https';if(!d.getElementById(id)){js=d.createElement(s);js.id=id;js.src=p+'://platform.twitter.com/widgets.js';fjs.parentNode.insertBefore(js,fjs);}}(document, 'script', 'twitter-wjs');</script></p>
 
@@ -380,7 +375,7 @@ function animateTyping() {
   <span class="line" id="learnosity-line"></span>
   <span class="line" id="you-line"></span>
   <p id="you">
-    <a id="your-logo" href="/partners.html" title="this could be us but you playin'">You</a>
+    <a id="your-logo" class="no-underline" href="/partners.html" title="this could be us but you playin'">You</a>
     Use MathQuill? <a href="/partners.html">Partner with us</a> so we can work more closely with you!
   </p>
 </div>
