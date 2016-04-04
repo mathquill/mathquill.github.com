@@ -140,6 +140,9 @@ p {
 }
 pre {
   font-size: .95em;
+  -webkit-text-size-adjust: 100%;
+  -moz-text-size-adjust: none;
+  text-size-adjust: none;
 }
 
 h3 {
