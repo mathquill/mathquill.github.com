@@ -29,7 +29,7 @@ h2 {
   font: 200 1.1em "Helvetica Neue", Helvetica, Arial, sans-serif;
   margin: 0;
 }
-h3:target {
+h3:target, h3.target {
   background: #F4ECFF;
   margin: 1.9em -.2em -.1em -.2em;
   padding: .1em .2em;
@@ -182,9 +182,18 @@ a.github-mention {
     return c/2 * (-Math.pow(2, -10 * --t) + 2) + b;
   };
   $('#nav-community').click(function() {
+    if (history.pushState) {
+      history.pushState(null, null, '#community');
+
+      // ugh https://github.com/whatwg/html/issues/639
+      $('#community').addClass('target');
+      $(window).one('popstate', function() { $('#community').removeClass('target'); });
+    }
     $('html, body').stop().animate({
       scrollTop: $('#community').offset().top,
-    }, 600, 'easeInOutExpo', function() { location.hash = '#community'; });
+    }, 600, 'easeInOutExpo', function() {
+      if (!history.pushState) location.hash = '#community';
+    });
     return false;
   });
   </script>
